@@ -20,5 +20,13 @@
   },
   "devDependencies": {
     "nodemon": "^3.1.14"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dxmimiu/cinematch-backend.git"
+  },
+  "bugs": {
+    "url": "https://github.com/dxmimiu/cinematch-backend/issues"
+  },
+  "homepage": "https://github.com/dxmimiu/cinematch-backend#readme"
 }
