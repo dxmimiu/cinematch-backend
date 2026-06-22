@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const sqlite3 = require('sqlite3').verbose();
 const jwt = require('jsonwebtoken');
+const bcrypt = require('bcrypt');
 
 const app = express();
 app.use(cors());
@@ -10,34 +11,20 @@ app.use(express.json());
 const SECRET_KEY = 'cinematch_super_secret_key';
 
 // ==========================================
-// 1. เชื่อมต่อและสร้างตาราง SQLite
+// 1. เชื่อมต่อฐานข้อมูล Supabase (PostgreSQL)
 // ==========================================
-const db = new sqlite3.Database('./database.db', (err) => {
-    if (err) console.error('เกิดข้อผิดพลาดในการเชื่อมต่อ SQLite:', err.message);
-    else console.log('เชื่อมต่อฐานข้อมูล SQLite สำเร็จแล้ว!');
+const { pool } = require('./database'); // ดึง pool มาจากไฟล์ database.js ที่เราแก้ไว้ก่อนหน้านี้
+
+// ตรวจสอบความพร้อมผ่านการ query เบื้องต้น
+pool.query('SELECT NOW()', (err, res) => {
+    if (err) {
+        console.error('เกิดข้อผิดพลาดในการเชื่อมต่อฐานข้อมูล:', err.message);
+    } else {
+        console.log('เชื่อมต่อฐานข้อมูล PostgreSQL บน Cloud (Supabase) สำเร็จแล้ว!');
+    }
 });
 
-db.serialize(() => {
-    db.run(`CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT,
-        email TEXT UNIQUE,
-        password TEXT,
-        has_completed_quiz INTEGER DEFAULT 0
-    )`);
 
-    db.run(`CREATE TABLE IF NOT EXISTS user_likes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        movie_id TEXT,
-        action TEXT,
-        media_type TEXT,
-        movie_title TEXT,
-        poster_path TEXT, 
-        genres TEXT,
-        points INTEGER
-    )`);
-});
 
 // Middleware สำหรับตรวจสอบ Token
 const authenticateToken = (req, res, next) => {
@@ -55,49 +42,91 @@ const authenticateToken = (req, res, next) => {
 // ==========================================
 // 2. ระบบ Auth (สมัครสมาชิก & ล็อกอิน)
 // ==========================================
-app.post('/api/register', (req, res) => {
+app.post('/api/register', async (req, res) => {
     const { name, email, password } = req.body;
-    db.run(`INSERT INTO users (name, email, password) VALUES (?, ?, ?)`, [name, email, password], function(err) {
-        if (err) {
-            // ✅ เพิ่ม 2 บรรทัดนี้ เพื่อให้มันปริ้นท์บอกว่า Error อะไร
-            console.error("🔥 SQLite Error:", err.message); 
-            
-            if (err.message.includes('UNIQUE constraint failed')) {
-                return res.status(400).json({ message: 'มีอีเมลนี้ในระบบแล้ว' });
-            }
-            // ✅ ส่งข้อความ Error ไปโชว์ที่หน้าเว็บด้วย จะได้ไม่งง
-            return res.status(500).json({ message: 'Database error: ' + err.message }); 
-        }
+    if (!name || !email || !password) return res.status(400).json({ message: 'กรุณากรอกข้อมูลให้ครบถ้วน' });
+
+    try {
+        const salt = await bcrypt.genSalt(10);
+        const passwordHash = await bcrypt.hash(password, salt);
         
-        const token = jwt.sign({ id: this.lastID, name, email }, SECRET_KEY);
+        const result = await pool.query(
+            `INSERT INTO users (name, email, password, has_completed_quiz) VALUES ($1, $2, $3, 0) RETURNING id`, 
+            [name, email, passwordHash]
+        );
+        
+        const userId = result.rows[0].id;
+        const token = jwt.sign({ id: userId, name, email }, SECRET_KEY);
+        
         res.status(201).json({ 
             token, 
-            user: { id: this.lastID, name, email, has_completed_quiz: 0 } 
+            user: { id: userId, name, email, has_completed_quiz: 0 } 
         });
-    });
+    } catch (err) {
+        console.error("🔥 Database Error:", err.message); 
+        return res.status(400).json({ message: 'มีอีเมลนี้ในระบบแล้ว หรือเกิดข้อผิดพลาด' }); 
+    }
 });
 
-app.post('/api/login', (req, res) => {
+app.post('/api/login', async (req, res) => {
     const { email, password } = req.body;
-    db.get(`SELECT * FROM users WHERE email = ? AND password = ?`, [email, password], (err, user) => {
-        if (err) return res.status(500).json({ message: 'Database error' });
-        if (!user) return res.status(400).json({ message: 'อีเมลหรือรหัสผ่านไม่ถูกต้อง' });
+    
+    try {
+        const result = await pool.query(`SELECT * FROM users WHERE email = $1`, [email]);
+        const user = result.rows[0];
+
+        if (!user || !(await bcrypt.compare(password, user.password))) {
+            return res.status(400).json({ message: 'อีเมลหรือรหัสผ่านไม่ถูกต้อง' });
+        }
 
         const token = jwt.sign({ id: user.id, name: user.name, email: user.email }, SECRET_KEY);
         res.status(200).json({ 
             token, 
             user: { id: user.id, name: user.name, email: user.email, has_completed_quiz: user.has_completed_quiz } 
         });
-    });
+    } catch (err) {
+        console.error("Login Error:", err);
+        res.status(500).json({ message: 'Database error' });
+    }
+});
+
+// 🟢 API ใหม่: บันทึกค่าน้ำหนักคะแนนหมวดหมู่ (Genre Weights) จาก Preference Quiz ลง Cloud
+app.post('/api/preferences', authenticateToken, async (req, res) => {
+    const userId = req.user.id;
+    const { genreWeights } = req.body; // รับ Object เช่น {"แอนิเมชัน": 15, "สยองขวัญ": 8} จากหน้าบ้าน
+
+    if (!genreWeights || Object.keys(genreWeights).length === 0) {
+        return res.status(400).json({ message: "ไม่มีข้อมูลคะแนนความชอบส่งมา" });
+    }
+
+    try {
+        // วนลูปบันทึกหรืออัปเดตคะแนนทีละหมวดหมู่ลงฐานข้อมูล Supabase
+        for (const [genreName, score] of Object.entries(genreWeights)) {
+            await pool.query(
+                `INSERT INTO user_preferences (user_id, pref_key, pref_value) 
+                 VALUES ($1, $2, $3)
+                 ON CONFLICT (user_id, pref_key) 
+                 DO UPDATE SET pref_value = EXCLUDED.pref_value`, // ถ้าเคยมีหมวดหมู่นี้แล้ว ให้อัปเดตคะแนนทับเลย
+                [userId, genreName, score]
+            );
+        }
+        res.status(200).json({ message: 'บันทึกคะแนนความชอบลง Cloud สำเร็จแล้ว' });
+    } catch (err) {
+        console.error("Save Preferences Error:", err);
+        res.status(500).json({ message: 'เกิดข้อผิดพลาดในการบันทึกคะแนนลงคลังข้อมูล' });
+    }
 });
 
 // API สำหรับอัปเดตสถานะว่าทำควิซเสร็จแล้ว (App.jsx เรียกใช้ตอนจบ Quiz)
-app.post('/api/users/complete-quiz', authenticateToken, (req, res) => {
+app.post('/api/users/complete-quiz', authenticateToken, async (req, res) => {
     const userId = req.user.id;
-    db.run(`UPDATE users SET has_completed_quiz = 1 WHERE id = ?`, [userId], function(err) {
-        if (err) return res.status(500).json({ message: 'Update failed' });
+    try {
+        await pool.query(`UPDATE users SET has_completed_quiz = 1 WHERE id = $1`, [userId]);
         res.status(200).json({ message: 'Quiz status updated' });
-    });
+    } catch (err) {
+        console.error("Update Quiz Error:", err);
+        res.status(500).json({ message: 'Update failed' });
+    }
 });
 
 // ==========================================
@@ -105,7 +134,8 @@ app.post('/api/users/complete-quiz', authenticateToken, (req, res) => {
 // ==========================================
 
 // บันทึกความชอบลงฐานข้อมูล (ป้องกันข้อมูลซ้ำ + เก็บหน้าปกหนัง)
-app.post('/api/likes', authenticateToken, (req, res) => {
+// บันทึกความชอบภาพยนตร์ / ผลจากมินิเกม พร้อมเก็บคะแนนลง Cloud
+app.post('/api/likes', authenticateToken, async (req, res) => {
     const { movie_id, film_id, action, type, media_type, movie_title, film_title, genres, points, poster_path } = req.body;
     const userId = req.user.id;
     
@@ -114,50 +144,66 @@ app.post('/api/likes', authenticateToken, (req, res) => {
     const finalTitle = movie_title || film_title || null;
     const finalPoster = poster_path || null;
     const finalGenres = genres || null;
-    const finalPoints = points || 0;
-
-    // เช็กข้อมูลซ้ำ
-    const checkQuery = `SELECT id FROM user_likes WHERE user_id = ? AND movie_id = ?`;
     
-    db.get(checkQuery, [userId, finalMovieId], (err, row) => {
-        if (err) return res.status(500).json({ message: "Database Error" });
-        
-        if (row) {
-            // อัปเดตของเดิม
-            const updateQuery = `UPDATE user_likes SET action = ?, media_type = ?, movie_title = ?, poster_path = ?, genres = ?, points = ? WHERE id = ?`;
-            db.run(updateQuery, [finalAction, media_type || 'movie', finalTitle, finalPoster, finalGenres, finalPoints, row.id], function(updateErr) {
-                if (updateErr) return res.status(500).json({ message: "Update Error" });
-                return res.status(200).json({ message: "อัปเดตข้อมูลสำเร็จ" });
-            });
-        } else {
-            // สร้างใหม่
-            const insertQuery = `INSERT INTO user_likes (user_id, movie_id, action, media_type, movie_title, poster_path, genres, points) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
-            db.run(insertQuery, [userId, finalMovieId, finalAction, media_type || 'movie', finalTitle, finalPoster, finalGenres, finalPoints], function(insertErr) {
-                if (insertErr) return res.status(500).json({ message: "Insert Error" });
-                res.status(200).json({ message: "บันทึกสำเร็จ" });
-            });
-        }
-    });
+    // 🟢 ดึงค่าคะแนนที่ส่งมาจากหน้าบ้าน ถ้าไม่มีค่อยให้เป็น 0
+    const finalPoints = parseInt(points) || 0; 
+
+    try {
+        const checkResult = await pool.query(
+            `SELECT id FROM user_likes WHERE user_id = $1 AND movie_id = $2`, 
+            [userId, finalMovieId]
+          );
+          
+          if (checkResult.rows.length > 0) {
+              // อัปเดตของเดิม (รวมถึงอัปเดตคะแนนใหม่ที่ได้จากเกม)
+              await pool.query(
+                  `UPDATE user_likes SET action = $1, media_type = $2, movie_title = $3, poster_path = $4, genres = $5, points = $6 WHERE id = $7`, 
+                  [finalAction, media_type || 'movie', finalTitle, finalPoster, finalGenres, finalPoints, checkResult.rows[0].id]
+              );
+              return res.status(200).json({ message: "อัปเดตข้อมูลและคะแนนสำเร็จ" });
+          } else {
+              // บันทึกรายการใหม่พร้อมคะแนนลงตาราง user_likes
+              await pool.query(
+                  `INSERT INTO user_likes (user_id, movie_id, action, media_type, movie_title, poster_path, genres, points) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, 
+                  [userId, finalMovieId, finalAction, media_type || 'movie', finalTitle, finalPoster, finalGenres, finalPoints]
+              );
+              return res.status(200).json({ message: "บันทึกข้อมูลและคะแนนสำเร็จ" });
+          }
+    } catch (err) {
+        console.error("Likes Post Error:", err);
+        return res.status(500).json({ message: "Database Error" });
+    }
 });
 
-app.get('/api/likes', authenticateToken, (req, res) => {
+app.get('/api/likes', authenticateToken, async (req, res) => {
     const userId = req.user.id;
-    // ✅ ส่ง media_type กลับไปให้หน้าบ้านด้วย
-    db.all(`SELECT movie_id, action, media_type FROM user_likes WHERE user_id = ?`, [userId], (err, rows) => {
-        if (err) return res.status(500).json({ message: 'Database error' });
-        res.status(200).json(rows);
-    });
+    try {
+        const result = await pool.query(
+            `SELECT movie_id, action, media_type FROM user_likes WHERE user_id = $1`, 
+            [userId]
+        );
+        res.status(200).json(result.rows);
+    } catch (err) {
+        console.error("Likes Get Error:", err);
+        res.status(500).json({ message: 'Database error' });
+    }
 });
 
 // สร้าง API สำหรับลบรายการออกจาก Collection โดยเฉพาะ (แก้บั๊กตอนกดกากบาท)
-app.delete('/api/likes/:movie_id', authenticateToken, (req, res) => {
+app.delete('/api/likes/:movie_id', authenticateToken, async (req, res) => {
     const userId = req.user.id;
     const movieId = req.params.movie_id;
-    
-    db.run(`DELETE FROM user_likes WHERE user_id = ? AND movie_id = ?`, [userId, movieId], function(err) {
-        if (err) return res.status(500).json({ message: 'Delete error' });
+
+    try {
+        await pool.query(
+            `DELETE FROM user_likes WHERE user_id = $1 AND movie_id = $2`, 
+            [userId, movieId]
+        );
         res.status(200).json({ message: 'ลบข้อมูลสำเร็จ' });
-    });
+    } catch (err) {
+        console.error("Delete Like Error:", err);
+        res.status(500).json({ message: 'Delete error' });
+    }
 });
 
 // ==========================================
@@ -174,11 +220,28 @@ const TMDB_GENRE_MAP = {
 // ==========================================
 // แนะนำภาพยนตร์รายบุคคล (สำหรับหน้า Home.jsx Top 10 For You)
 // ==========================================
+// แนะนำภาพยนตร์รายบุคคล (ดึงคะแนนโดยตรงจากคลังข้อมูลบน Cloud)
 app.post('/api/recommendations', authenticateToken, async (req, res) => {
     try {
-        const userWeights = req.body.genreWeights || {};
+        const userId = req.user.id;
         
-        // ถ้าผู้ใช้ยังไม่มีข้อมูลความชอบเลย ให้ส่งลิสต์ว่างไปก่อน (เดี๋ยวหน้าบ้านใช้ Fallback)
+        // 🟢 เปลี่ยนมาดึงค่าน้ำหนักคะแนนจากตาราง user_preferences บน Supabase
+        const prefResult = await pool.query(
+            `SELECT pref_key, pref_value FROM user_preferences WHERE user_id = $1`,
+            [userId]
+        );
+
+        let userWeights = {};
+        if (prefResult.rows.length > 0) {
+            // ดึงคะแนนจากฐานข้อมูลมาจัดโครงสร้างใหม่
+            prefResult.rows.forEach(row => {
+                userWeights[row.pref_key] = row.pref_value;
+            });
+        } else {
+            // Fallback: ถ้าใน Cloud ยังไม่มีข้อมูล ให้ลองใช้ค่าที่หน้าบ้านส่งมาเผื่อไว้
+            userWeights = req.body.genreWeights || {};
+        }
+        
         if (Object.keys(userWeights).length === 0) {
             return res.status(200).json([]);
         }
@@ -197,11 +260,10 @@ app.post('/api/recommendations', authenticateToken, async (req, res) => {
             .map(([name]) => REVERSE_GENRE_MAP[name])
             .filter(id => id);
 
-        // 2. ใช้ OR (|) แทน AND (,) เพื่อกวาดข้อมูลให้กว้างขึ้น
         const genreQuery = topGenres.length > 0 ? `&with_genres=${topGenres.join('|')}` : '';
         const API_KEY = "181edc5801db6678de6ccb2864149a6a";
 
-        // 3. DEEP FETCHING: ดึงทั้งหนังและซีรีส์ 3 หน้า
+        // 2. ดึงข้อมูลจาก TMDB 3 หน้า
         const fetchPromises = [];
         for (let page = 1; page <= 3; page++) {
             fetchPromises.push(fetch(`https://api.themoviedb.org/3/discover/movie?api_key=${API_KEY}&language=th-TH&sort_by=popularity.desc${genreQuery}&page=${page}`));
@@ -223,7 +285,7 @@ app.post('/api/recommendations', authenticateToken, async (req, res) => {
             allItems = [...allItems, ...formatted];
         });
 
-        // 4. SCORING ENGINE: ให้คะแนนหนังทุกเรื่องตามคะแนนใน Local Storage
+        // 3. SCORING ENGINE: ให้คะแนนหนังทุกเรื่องตามคะแนนในคลังข้อมูล
         const scoredItems = allItems.map(item => {
             let matchScore = 0; 
             if (item.genre_ids) {
@@ -237,20 +299,17 @@ app.post('/api/recommendations', authenticateToken, async (req, res) => {
             return { ...item, rawScore: matchScore };
         });
 
-        // 5. SORT & FILTER: ตัดเรื่องซ้ำและเรียงคะแนน
         scoredItems.sort((a, b) => b.rawScore - a.rawScore);
 
         const uniqueItems = [];
         const seenIds = new Set();
         for (const item of scoredItems) {
-            // เอาเฉพาะที่มีหน้าปก และคะแนน > 0
             if (!seenIds.has(item.id) && item.poster_path && item.backdrop_path && item.rawScore > 0) {
                 seenIds.add(item.id);
                 uniqueItems.push(item);
             }
         }
 
-        // 6. PERCENTAGE CONVERSION (บัญญัติไตรยางค์)
         const topScore = uniqueItems[0]?.rawScore || 1; 
         const finalResults = uniqueItems.map((item, index) => {
             let percent = 98; 
@@ -261,7 +320,6 @@ app.post('/api/recommendations', authenticateToken, async (req, res) => {
             return { ...item, matchPercent: percent };
         });
 
-        // คืนค่า Top 10 ไปให้หน้า Home.jsx แสดงผล
         res.status(200).json(finalResults.slice(0, 10));
 
     } catch (err) {
