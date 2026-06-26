@@ -23,7 +23,7 @@ pool.query('SELECT NOW()', (err, res) => {
     }
 });
 
-// Middleware สำหรับตรวจสอบ Token
+// Middleware ตรวจสอบ Token
 const authenticateToken = (req, res, next) => {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
@@ -44,15 +44,28 @@ app.post('/api/register', async (req, res) => {
     if (!name || !email || !password) return res.status(400).json({ message: 'กรุณากรอกข้อมูลให้ครบถ้วน' });
 
     try {
-        const checkUser = await pool.query(`SELECT id FROM users WHERE email = $1`, [email]);
+        // แก้ไข: ค้นหาทั้ง email และ name ในฐานข้อมูลพร้อมกันเพื่อเช็กความซ้ำซ้อน
+        const checkUser = await pool.query(
+            `SELECT id, name, email FROM users WHERE email = $1 OR name = $2`, 
+            [email, name]
+        );
+        
+        // ถ้าเจอข้อมูลแปลว่ามีสิ่งใดสิ่งหนึ่งซ้ำ
         if (checkUser.rows.length > 0) {
-            return res.status(400).json({ message: 'อีเมลนี้มีในระบบแล้ว กรุณาเข้าสู่ระบบ' });
+            const existingUser = checkUser.rows[0];
+            // แยกแยะและแจ้งเตือนให้ตรงจุดว่าอะไรที่ซ้ำ
+            if (existingUser.name === name) {
+                return res.status(400).json({ message: 'ชื่อผู้ใช้นี้ถูกใช้งานแล้ว กรุณาตั้งชื่ออื่น' });
+            }
+            if (existingUser.email === email) {
+                return res.status(400).json({ message: 'อีเมลนี้มีในระบบแล้ว กรุณาเข้าสู่ระบบ' });
+            }
         }
 
+        // หากไม่ซ้ำ ดำเนินการเข้ารหัสและบันทึกข้อมูลตามปกติ
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
         
-        // ใช้ชื่อคอลัมน์ password และ has_completed_quiz ให้ตรงกับฐานข้อมูล
         const result = await pool.query(
             `INSERT INTO users (name, email, password, has_completed_quiz) VALUES ($1, $2, $3, 0) RETURNING id`, 
             [name, email, hashedPassword]
@@ -95,7 +108,7 @@ app.post('/api/login', async (req, res) => {
     }
 });
 
-// API บันทึกค่าน้ำหนักคะแนนหมวดหมู่จาก Preference Quiz ลง Cloud
+// API บันทึกค่าน้ำหนักคะแนนหมวดหมู่จาก Preference Quiz ลง Cloud ในฐานข้อมูล Supabase
 app.post('/api/preferences', authenticateToken, async (req, res) => {
     const userId = req.user.id;
     const { genreWeights } = req.body;
@@ -451,7 +464,7 @@ app.post('/api/rooms/match/:pin', authenticateToken, async (req, res) => {
     }
 });
 
-// 🟢 2. ปรับตัวแปรพอร์ตให้ยืดหยุ่นเพื่อรองรับการรันบนระบบ Render
+// 2. ปรับตัวแปรพอร์ตให้ยืดหยุ่นเพื่อรองรับการรันบนระบบ Render
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
     console.log(`Backend server running on port ${PORT}`);
