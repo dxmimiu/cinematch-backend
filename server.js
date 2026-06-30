@@ -1,13 +1,12 @@
 const express = require('express');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
-const bcrypt = require('bcryptjs'); // 1. เปลี่ยนมาใช้ bcryptjs เพื่อความเสถียรบน Cloud
+const bcrypt = require('bcryptjs'); 
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ดึงรหัสลับจาก Environment หรือใช้ค่าสำรองถ้าระบบหาไม่เจอ
 const SECRET_KEY = process.env.JWT_SECRET || 'cinematch_super_secret_key';
 
 // ==========================================
@@ -23,7 +22,6 @@ pool.query('SELECT NOW()', (err, res) => {
     }
 });
 
-// Middleware ตรวจสอบ Token
 const authenticateToken = (req, res, next) => {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
@@ -44,16 +42,13 @@ app.post('/api/register', async (req, res) => {
     if (!name || !email || !password) return res.status(400).json({ message: 'กรุณากรอกข้อมูลให้ครบถ้วน' });
 
     try {
-        // แก้ไข: ค้นหาทั้ง email และ name ในฐานข้อมูลพร้อมกันเพื่อเช็กความซ้ำซ้อน
         const checkUser = await pool.query(
             `SELECT id, name, email FROM users WHERE email = $1 OR name = $2`, 
             [email, name]
         );
         
-        // ถ้าเจอข้อมูลแปลว่ามีสิ่งใดสิ่งหนึ่งซ้ำ
         if (checkUser.rows.length > 0) {
             const existingUser = checkUser.rows[0];
-            // แยกแยะและแจ้งเตือนให้ตรงจุดว่าอะไรที่ซ้ำ
             if (existingUser.name === name) {
                 return res.status(400).json({ message: 'ชื่อผู้ใช้นี้ถูกใช้งานแล้ว กรุณาตั้งชื่ออื่น' });
             }
@@ -62,7 +57,6 @@ app.post('/api/register', async (req, res) => {
             }
         }
 
-        // หากไม่ซ้ำ ดำเนินการเข้ารหัสและบันทึกข้อมูลตามปกติ
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
         
@@ -92,7 +86,6 @@ app.post('/api/login', async (req, res) => {
         const result = await pool.query(`SELECT * FROM users WHERE email = $1`, [email]);
         const user = result.rows[0];
 
-        // เทียบรหัสผ่านกับคอลัมน์ password
         if (!user || !(await bcrypt.compare(password, user.password))) {
             return res.status(400).json({ message: 'อีเมลหรือรหัสผ่านไม่ถูกต้อง' });
         }
@@ -108,7 +101,6 @@ app.post('/api/login', async (req, res) => {
     }
 });
 
-// API บันทึกค่าน้ำหนักคะแนนหมวดหมู่จาก Preference Quiz ลง Cloud ในฐานข้อมูล Supabase
 app.post('/api/preferences', authenticateToken, async (req, res) => {
     const userId = req.user.id;
     const { genreWeights } = req.body;
@@ -134,7 +126,6 @@ app.post('/api/preferences', authenticateToken, async (req, res) => {
     }
 });
 
-// API สำหรับอัปเดตสถานะว่าทำควิซเสร็จแล้ว
 app.post('/api/users/complete-quiz', authenticateToken, async (req, res) => {
     const userId = req.user.id;
     try {
@@ -147,17 +138,20 @@ app.post('/api/users/complete-quiz', authenticateToken, async (req, res) => {
 });
 
 // ==========================================
-// 3. ระบบ Like / Dislike ภาพยนตร์
+// 3. ระบบ Like / Dislike ภาพยนตร์ (แก้ไขบั๊ก Collection แล้ว)
 // ==========================================
 app.post('/api/likes', authenticateToken, async (req, res) => {
     const { movie_id, film_id, action, type, media_type, movie_title, film_title, genres, points, poster_path } = req.body;
     const userId = req.user.id;
     
-    const finalMovieId = movie_id || film_id; 
+    // แปลง ID ให้เป็น String เสมอ เพื่อป้องกันปัญหา Type Mismatch ตอนค้นหาใน Database
+    const finalMovieId = String(movie_id || film_id); 
     const finalAction = action || type;
     const finalTitle = movie_title || film_title || null;
     const finalPoster = poster_path || null;
-    const finalGenres = genres || null;
+    
+    // แปลง Array ของ Genres ให้เป็น JSON String เพื่อไม่ให้กลายเป็น [object Object] ใน Database
+    const finalGenres = typeof genres === 'object' ? JSON.stringify(genres) : (genres || null);
     const finalPoints = parseInt(points) || 0; 
 
     try {
@@ -188,8 +182,9 @@ app.post('/api/likes', authenticateToken, async (req, res) => {
 app.get('/api/likes', authenticateToken, async (req, res) => {
     const userId = req.user.id;
     try {
+        // แก้ไข: ดึงข้อมูลที่จำเป็นทั้งหมดสำหรับแสดงผลการ์ดในหน้า Collection และเรียงจากใหม่ไปเก่า
         const result = await pool.query(
-            `SELECT movie_id, action, media_type FROM user_likes WHERE user_id = $1`, 
+            `SELECT movie_id, action, media_type, movie_title, poster_path, genres, points FROM user_likes WHERE user_id = $1 ORDER BY id DESC`, 
             [userId]
         );
         res.status(200).json(result.rows);
@@ -201,7 +196,7 @@ app.get('/api/likes', authenticateToken, async (req, res) => {
 
 app.delete('/api/likes/:movie_id', authenticateToken, async (req, res) => {
     const userId = req.user.id;
-    const movieId = req.params.movie_id;
+    const movieId = String(req.params.movie_id);
 
     try {
         await pool.query(
@@ -464,7 +459,6 @@ app.post('/api/rooms/match/:pin', authenticateToken, async (req, res) => {
     }
 });
 
-// 2. ปรับตัวแปรพอร์ตให้ยืดหยุ่นเพื่อรองรับการรันบนระบบ Render
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
     console.log(`Backend server running on port ${PORT}`);
