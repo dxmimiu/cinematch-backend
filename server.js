@@ -138,19 +138,18 @@ app.post('/api/users/complete-quiz', authenticateToken, async (req, res) => {
 });
 
 // ==========================================
-// 3. ระบบ Like / Dislike ภาพยนตร์ (แก้ไขบั๊ก Collection แล้ว)
+// 3. ระบบ Like / Dislike ภาพยนตร์ (เพิ่มฟีเจอร์ Batch สำหรับ Skip)
 // ==========================================
+
+// 🟢 โค้ดเดิม: สำหรับกดเลือกทีละเรื่อง
 app.post('/api/likes', authenticateToken, async (req, res) => {
     const { movie_id, film_id, action, type, media_type, movie_title, film_title, genres, points, poster_path } = req.body;
     const userId = req.user.id;
     
-    // แปลง ID ให้เป็น String เสมอ เพื่อป้องกันปัญหา Type Mismatch ตอนค้นหาใน Database
     const finalMovieId = String(movie_id || film_id); 
     const finalAction = action || type;
     const finalTitle = movie_title || film_title || null;
     const finalPoster = poster_path || null;
-    
-    // แปลง Array ของ Genres ให้เป็น JSON String เพื่อไม่ให้กลายเป็น [object Object] ใน Database
     const finalGenres = typeof genres === 'object' ? JSON.stringify(genres) : (genres || null);
     const finalPoints = parseInt(points) || 0; 
 
@@ -179,10 +178,54 @@ app.post('/api/likes', authenticateToken, async (req, res) => {
     }
 });
 
+// 🟢 โค้ดเพิ่มใหม่: รับข้อมูลแบบ Array (หลายเรื่องพร้อมกัน) ไว้ใช้ตอนกด Skip
+app.post('/api/likes/batch', authenticateToken, async (req, res) => {
+    const { skips } = req.body; // รับตัวแปรชื่อ skips ที่หน้าบ้านส่งมา
+    const userId = req.user.id;
+
+    if (!skips || !Array.isArray(skips)) {
+        return res.status(400).json({ message: "ข้อมูลที่ส่งมาไม่ถูกต้อง (ต้องเป็น Array)" });
+    }
+
+    try {
+        // วนลูปทำงานทีละรายการ
+        for (const item of skips) {
+            const { movie_id, action, media_type, movie_title, poster_path, genres, points } = item;
+            
+            const finalMovieId = String(movie_id);
+            const finalGenres = typeof genres === 'object' ? JSON.stringify(genres) : (genres || null);
+            const finalPoints = parseInt(points) || 0;
+
+            const checkResult = await pool.query(
+                `SELECT id FROM user_likes WHERE user_id = $1 AND movie_id = $2`, 
+                [userId, finalMovieId]
+            );
+
+            if (checkResult.rows.length > 0) {
+                // ถ้าเคยมีหนังเรื่องนี้อยู่ในระบบแล้ว (อาจจะเคยไลค์มาก่อน) ก็ให้อัปเดตเป็น Skip แทน
+                await pool.query(
+                    `UPDATE user_likes SET action = $1, media_type = $2, movie_title = $3, poster_path = $4, genres = $5, points = $6 WHERE id = $7`, 
+                    [action, media_type || 'movie', movie_title, poster_path, finalGenres, finalPoints, checkResult.rows[0].id]
+                );
+            } else {
+                // ถ้ายังไม่เคยมีบันทึกเลย ให้เพิ่มใหม่
+                await pool.query(
+                    `INSERT INTO user_likes (user_id, movie_id, action, media_type, movie_title, poster_path, genres, points) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, 
+                    [userId, finalMovieId, action, media_type || 'movie', movie_title, poster_path, finalGenres, finalPoints]
+                );
+            }
+        }
+        return res.status(200).json({ message: "บันทึกข้อมูลแบบกลุ่ม (Batch) สำเร็จ" });
+    } catch (err) {
+        console.error("Batch Likes Error:", err);
+        return res.status(500).json({ message: "เกิดข้อผิดพลาดในการบันทึกฐานข้อมูลแบบกลุ่ม" });
+    }
+});
+
+
 app.get('/api/likes', authenticateToken, async (req, res) => {
     const userId = req.user.id;
     try {
-        // แก้ไข: ดึงข้อมูลที่จำเป็นทั้งหมดสำหรับแสดงผลการ์ดในหน้า Collection และเรียงจากใหม่ไปเก่า
         const result = await pool.query(
             `SELECT movie_id, action, media_type, movie_title, poster_path, genres, points FROM user_likes WHERE user_id = $1 ORDER BY id DESC`, 
             [userId]
