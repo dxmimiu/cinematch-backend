@@ -358,6 +358,91 @@ app.post('/api/recommendations', authenticateToken, async (req, res) => {
 });
 
 // ==========================================
+// 4.1 ระบบ AI Search (เชื่อมต่อ Dify API Secure Proxy)
+// ==========================================
+app.post('/api/ai-search', authenticateToken, async (req, res) => {
+    const userId = req.user.id;
+    const { query } = req.body;
+
+    if (!query || !query.trim()) {
+        return res.status(400).json({ message: "กรุณากรอกข้อความค้นหา" });
+    }
+
+    try {
+        // ดึงคะแนนสะสมของผู้ใช้ขึ้นมาคำนวณด้วยเพื่อส่งไปให้ AI รับรู้
+        const prefResult = await pool.query(
+            `SELECT pref_key, pref_value FROM user_preferences WHERE user_id = $1`,
+            [userId]
+        );
+
+        let userWeights = {};
+        if (prefResult.rows.length > 0) {
+            prefResult.rows.forEach(row => {
+                userWeights[row.pref_key] = row.pref_value;
+            });
+        }
+
+        // คีย์สำหรับการคุยกับระบบ Dify API ของคุณ
+        const DIFY_API_KEY = process.env.DIFY_API_KEY || 'app-sc7f4lP0zQaKRZoTAcMMoWPF';
+
+        const response = await fetch('https://api.dify.ai/v1/chat-messages', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${DIFY_API_KEY}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                inputs: {
+                    user_preferences: JSON.stringify(userWeights) // ส่งคะแนนความชอบสะสมไปคำนวณร่วมด้วย
+                },
+                query: query,
+                response_mode: "blocking",
+                user: `cinematch_user_${userId}`
+            })
+        });
+
+        const difyData = await response.json();
+
+        // 🟢 เพิ่มส่วนนี้: ล้างสิ่งที่อาจเป็น Markdown ออก
+        const cleanJson = difyData.answer.replace(/```json/g, '').replace(/```/g, '').trim();
+
+        // 🟢 ลอง Parse ดู ถ้า Error ให้แสดงใน Console เพื่อดูหน้าตาของมัน
+        try {
+            const finalData = JSON.parse(cleanJson);
+            res.json(finalData);
+        } catch (e) {
+            console.error("AI ส่งข้อมูลมาแบบนี้ ซึ่งไม่สามารถ Parse ได้:", rawAnswer);
+            res.status(500).json({ message: "AI ตอบกลับมาในรูปแบบที่ไม่ถูกต้อง" });
+        }
+        
+        if (!difyData.answer) {
+            throw new Error("ไม่ได้รับคำตอบจากระบบประมวลผลอัจฉริยะ");
+        }
+
+        // คลีนข้อความเผื่อ AI เผลอครอบตัว markdown ```json ... ``` มาให้
+        let cleanedAnswer = difyData.answer.trim();
+        if (cleanedAnswer.startsWith('```json')) {
+            cleanedAnswer = cleanedAnswer.replace(/^```json/, '').replace(/```$/, '').trim();
+        } else if (cleanedAnswer.startsWith('```')) {
+            cleanedAnswer = cleanedAnswer.replace(/^```/, '').replace(/```$/, '').trim();
+        }
+
+        // แปลงข้อความสตริงให้เป็น JSON Object ส่งกลับไปให้หน้าบ้านวาดการ์ด
+        const parsedJson = JSON.parse(cleanedAnswer);
+        res.status(200).json(parsedJson);
+
+    } catch (err) {
+        // 🟢 เพิ่มบรรทัดนี้เพื่อดูว่า Error จริงๆ คืออะไร
+        console.error("AI Search Engine Error:", err.message);
+        res.status(500).json({ 
+            message: "ระบบประมวลผลอัจฉริยะขัดข้องชั่วคราว",
+            ai_message: "ขออภัยด้วยนะคะ ระบบค้นหาอัจฉริยะเกิดข้อผิดพลาดชั่วคราว ลองพิมพ์ใหม่อีกครั้งได้ไหมคะ?",
+            recommended_movie_ids: []
+        });
+    }
+});
+
+// ==========================================
 // 5. ระบบ Duo Match (สร้างห้องและจับคู่)
 // ==========================================
 const activeRooms = {}; 
