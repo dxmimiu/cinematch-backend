@@ -569,15 +569,30 @@ app.post('/api/ai-search', authenticateToken, async (req, res) => {
             }
         }
 
-        // สกัดเอาเฉพาะก้อนเนื้อหา JSON ที่ CINE AI ตอบกลับมา
+// 🟢 1. จัดการข้อความที่ตอบกลับมาให้ฉลาดและปลอดภัยขึ้น
         const rawAnswer = fullAnswer.trim();
-        const jsonMatch = rawAnswer.match(/\{[\s\S]*\}/);
+        let finalData = {};
         
-        if (!jsonMatch) throw new Error("AI ตอบกลับมาผิดรูปแบบโครงสร้าง");
+        try {
+            const jsonMatch = rawAnswer.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+                finalData = JSON.parse(jsonMatch[0]);
+            } else {
+                // แผนสำรอง: ถ้า AI ดื้อ ไม่ตอบเป็น JSON ให้เอาข้อความทั้งหมดใส่กลับเข้าไป
+                finalData = {
+                    ai_message: rawAnswer || "ขออภัยค่ะ CINE AI กำลังจัดเรียงข้อมูล รบกวนพิมพ์ใหม่อีกครั้งนะคะ",
+                    recommended_movie_ids: []
+                };
+            }
+        } catch (e) {
+            console.error("JSON Parse Error:", e, "Raw Data:", rawAnswer);
+            finalData = {
+                ai_message: "ข้อความจาก CINE AI มีรูปแบบผิดปกติชั่วคราวค่ะ ลองพิมพ์ประโยคอื่นดูนะคะ",
+                recommended_movie_ids: []
+            };
+        }
 
-        const finalData = JSON.parse(jsonMatch[0]);
-        finalData.conversation_id = finalConversationId; // แนบรหัสบทสนทนากลับไปให้หน้าบ้านจำ
-
+        finalData.conversation_id = finalConversationId;
         return res.status(200).json(finalData);
 
     } catch (err) {
