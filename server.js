@@ -519,34 +519,66 @@ app.post('/api/ai-search', authenticateToken, async (req, res) => {
         let userWeights = {};
         prefResult.rows.forEach((row) => { userWeights[row.pref_key] = row.pref_value; });
 
-        // 🟢 2. เตรียมข้อมูลส่งให้ Dify
+        // 🟢 1. เปลี่ยน response_mode เป็น "streaming"
         const payload = {
             inputs: { user_preferences: JSON.stringify(userWeights) },
             query: query,
-            response_mode: "blocking",
+            response_mode: "streaming", 
             user: `cinematch_user_${userId}`
         };
 
-        // ถ้ามีรหัสจำบทสนทนาเก่า ให้แนบไปด้วย AI จะได้จำได้ว่าคุยอะไรค้างไว้
         if (conversation_id) {
             payload.conversation_id = conversation_id;
         }
 
         const response = await fetch('https://api.dify.ai/v1/chat-messages', {
             method: 'POST',
-            headers: { 'Authorization': `Bearer ${process.env.DIFY_API_KEY}`, 'Content-Type': 'application/json' },
+            headers: { 
+                'Authorization': `Bearer ${process.env.DIFY_API_KEY}`, 
+                'Content-Type': 'application/json' 
+            },
             body: JSON.stringify(payload)
         });
 
-        const difyData = await response.json();
-        
-        // 🟢 เพิ่มการเช็ค Error จาก Dify แบบเจาะลึก
-        if (!response.ok || !difyData.answer) {
-            console.error("❌ Dify API Error Details:", difyData);
-            throw new Error(`Dify ปฏิเสธการเชื่อมต่อ: ${difyData.message || difyData.code || 'ไม่มีคำตอบ'}`);
+        if (!response.ok) {
+            const errData = await response.text();
+            console.error("❌ Dify API Error:", errData);
+            throw new Error(`Dify ปฏิเสธการเชื่อมต่อ`);
         }
 
-        const rawAnswer = difyData.answer.trim();
+        // 🟢 2. เขียนระบบรับข้อมูลแบบ Streaming เอาชิ้นส่วนมาต่อกัน
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder("utf-8");
+        let fullAnswer = "";
+        let finalConversationId = conversation_id;
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            
+            const chunk = decoder.decode(value, { stream: true });
+            const lines = chunk.split('\n');
+            
+            for (const line of lines) {
+                if (line.startsWith('data: ')) {
+                    try {
+                        const data = JSON.parse(line.slice(6));
+                        // ดึงข้อความจาก event agent_message หรือ message มาต่อกัน
+                        if (data.event === 'message' || data.event === 'agent_message') {
+                            fullAnswer += data.answer;
+                        }
+                        if (data.conversation_id) {
+                            finalConversationId = data.conversation_id;
+                        }
+                    } catch (e) {
+                        // ข้ามบรรทัดที่ข้อมูลยังมาไม่ครบ
+                    }
+                }
+            }
+        }
+
+        // 🟢 3. เมื่อต่อข้อความเสร็จแล้ว นำมาแปลงเป็น JSON เพื่อส่งให้หน้าบ้าน
+        const rawAnswer = fullAnswer.trim();
         const jsonMatch = rawAnswer.match(/\{[\s\S]*\}/);
         
         if (!jsonMatch) {
@@ -555,9 +587,10 @@ app.post('/api/ai-search', authenticateToken, async (req, res) => {
         }
 
         const finalData = JSON.parse(jsonMatch[0]);
-        finalData.conversation_id = difyData.conversation_id;
+        finalData.conversation_id = finalConversationId;
 
         return res.status(200).json(finalData);
+        
     } catch (err) {
         console.error("AI Search Error:", err.message);
         return res.status(500).json({ message: "ระบบ AI ขัดข้อง", ai_message: "ขออภัยค่ะ ระบบค้นหาเกิดข้อผิดพลาด", recommended_movie_ids: [] });
