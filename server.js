@@ -507,71 +507,57 @@ app.post('/api/rooms/match/:pin', authenticateToken, async (req, res) => {
 // ==========================================
 app.post('/api/ai-search', authenticateToken, async (req, res) => {
     const userId = req.user.id;
-    const { query } = req.body;
+    // 🟢 1. เพิ่มการรับค่า conversation_id จากหน้าบ้าน
+    const { query, conversation_id } = req.body;
 
-    // ตรวจสอบเงื่อนไขข้อมูลนำเข้า
     if (!query || !query.trim()) {
         return res.status(400).json({ message: "กรุณากรอกข้อความค้นหา" });
     }
 
     try {
-        // [Flow: AI Engine] ดึงคะแนนความชอบสะสม (Weights) ของผู้ใช้จาก Database
-        const prefResult = await pool.query(
-            `SELECT pref_key, pref_value FROM user_preferences WHERE user_id = $1`,
-            [userId]
-        );
-
+        const prefResult = await pool.query(`SELECT pref_key, pref_value FROM user_preferences WHERE user_id = $1`, [userId]);
         let userWeights = {};
-        prefResult.rows.forEach(row => {
-            userWeights[row.pref_key] = row.pref_value;
-        });
+        prefResult.rows.forEach((row) => { userWeights[row.pref_key] = row.pref_value; });
 
-        // เรียกใช้งาน Dify API 
+        // 🟢 2. เตรียมข้อมูลส่งให้ Dify
+        const payload = {
+            inputs: { user_preferences: JSON.stringify(userWeights) },
+            query: query,
+            response_mode: "blocking",
+            user: `cinematch_user_${userId}`
+        };
+
+        // ถ้ามีรหัสจำบทสนทนาเก่า ให้แนบไปด้วย AI จะได้จำได้ว่าคุยอะไรค้างไว้
+        if (conversation_id) {
+            payload.conversation_id = conversation_id;
+        }
+
         const response = await fetch('https://api.dify.ai/v1/chat-messages', {
             method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${process.env.DIFY_API_KEY || 'app-sc7f4lP0zQaKRZoTAcMMoWPF'}`,
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                inputs: {
-                    user_preferences: JSON.stringify(userWeights) // แนบคะแนนสะสมส่งให้ AI
-                },
-                query: query,
-                response_mode: "blocking",
-                user: `cinematch_user_${userId}`
-            })
+            headers: { 'Authorization': `Bearer ${process.env.DIFY_API_KEY}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
         });
 
         const difyData = await response.json();
-        
-        if (!difyData.answer) {
-            throw new Error("ไม่ได้รับคำตอบจาก AI Agent");
-        }
+        if (!difyData.answer) throw new Error("ไม่ได้รับคำตอบจาก AI");
 
-        // [Flow: Keyword Matching] สกัดเอาเฉพาะก้อน JSON ออกมาจากข้อความตอบกลับของ AI
         const rawAnswer = difyData.answer.trim();
         const jsonMatch = rawAnswer.match(/\{[\s\S]*\}/);
+        if (!jsonMatch) throw new Error("AI ไม่ได้ตอบในรูปแบบ JSON");
 
-        if (!jsonMatch) {
-            throw new Error("AI ส่งข้อมูลกลับมาไม่ตรงตามรูปแบบโครงสร้างที่กำหนด");
-        }
+        const finalData = JSON.parse(jsonMatch[0]);
+        
+        // 🟢 3. ดึงรหัสจำบทสนทนา (conversation_id) จาก Dify ส่งกลับไปให้หน้าบ้าน
+        finalData.conversation_id = difyData.conversation_id;
 
-        // แปลงข้อความสัญญลักษณ์กลับเป็น Object แล้วส่งออกไปให้หน้าบ้าน
-        const finalJson = JSON.parse(jsonMatch[0]);
-        return res.status(200).json(finalJson);
-
+        return res.status(200).json(finalData);
     } catch (err) {
-        console.error("AI Search Engine Error:", err.message);
-        return res.status(500).json({ 
-            message: "ระบบเกิดข้อผิดพลาด",
-            ai_message: "ขออภัยด้วยนะคะ ระบบค้นหาอัจฉริยะขัดข้องชั่วคราว ลองพิมพ์ใหม่อีกครั้งได้ไหมคะ?",
-            recommended_movie_ids: []
-        });
+        console.error("AI Search Error:", err.message);
+        return res.status(500).json({ message: "ระบบ AI ขัดข้อง", ai_message: "ขออภัยค่ะ ระบบค้นหาเกิดข้อผิดพลาด", recommended_movie_ids: [] });
     }
 });
 
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 10000; 
 app.listen(PORT, () => {
     console.log(`Backend server running on port ${PORT}`);
 });
