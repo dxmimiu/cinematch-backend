@@ -35,7 +35,7 @@ const authenticateToken = (req, res, next) => {
 };
 
 // ==========================================
-// 2. ระบบ Auth (สมัครสมาชิก & ล็อกอิน & เช็คสถานะ)
+// 2. ระบบ Auth (สมัครสมาชิก & ล็อกอิน)
 // ==========================================
 app.post('/api/register', async (req, res) => {
     const { name, email, password } = req.body;
@@ -66,8 +66,7 @@ app.post('/api/register', async (req, res) => {
         );
         
         const userId = result.rows[0].id;
-        // 🟢 เพิ่ม expiresIn: '3d'
-        const token = jwt.sign({ id: userId, name, email }, SECRET_KEY, { expiresIn: '3d' });
+        const token = jwt.sign({ id: userId, name, email }, SECRET_KEY);
         
         res.status(201).json({ 
             token, 
@@ -91,8 +90,7 @@ app.post('/api/login', async (req, res) => {
             return res.status(400).json({ message: 'อีเมลหรือรหัสผ่านไม่ถูกต้อง' });
         }
 
-        // 🟢 เพิ่ม expiresIn: '3d'
-        const token = jwt.sign({ id: user.id, name: user.name, email: user.email }, SECRET_KEY, { expiresIn: '3d' });
+        const token = jwt.sign({ id: user.id, name: user.name, email: user.email }, SECRET_KEY);
         res.status(200).json({ 
             token, 
             user: { id: user.id, name: user.name, email: user.email, has_completed_quiz: user.has_completed_quiz } 
@@ -101,23 +99,6 @@ app.post('/api/login', async (req, res) => {
         console.error("Login Error:", err);
         res.status(500).json({ message: 'Database error' });
     }
-});
-
-// 🟢 เพิ่ม API เส้นใหม่ สำหรับเช็ค Token และทำ Sliding Expiration
-app.get('/api/verify', authenticateToken, (req, res) => {
-    // สร้าง Token ใบใหม่ที่มีอายุเริ่มนับหนึ่งใหม่ไปอีก 3 วัน
-    const newToken = jwt.sign(
-        { id: req.user.id, name: req.user.name, email: req.user.email }, 
-        SECRET_KEY, 
-        { expiresIn: '3d' } 
-    );
-
-    return res.status(200).json({ 
-        success: true, 
-        message: "Token is valid and extended",
-        token: newToken, 
-        user: req.user 
-    });
 });
 
 app.post('/api/preferences', authenticateToken, async (req, res) => {
@@ -157,7 +138,7 @@ app.post('/api/users/complete-quiz', authenticateToken, async (req, res) => {
 });
 
 // ==========================================
-// 3. ระบบ Like / Dislike ภาพยนตร์ (เพิ่มฟีเจอร์ Batch สำหรับ Skip)
+// 3. ระบบ Like / Dislike ภาพยนตร์
 // ==========================================
 app.post('/api/likes', authenticateToken, async (req, res) => {
     const { movie_id, film_id, action, type, media_type, movie_title, film_title, genres, points, poster_path } = req.body;
