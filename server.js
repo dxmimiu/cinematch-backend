@@ -505,23 +505,23 @@ app.post('/api/rooms/match/:pin', authenticateToken, async (req, res) => {
 // ==========================================
 // AI Search Engine Endpoint
 // ==========================================
+// ตัวอย่างโค้ดใน server.js สำหรับระบบ CINEMATCH
 app.post('/api/ai-search', authenticateToken, async (req, res) => {
     const userId = req.user.id;
-    // 🟢 1. เพิ่มการรับค่า conversation_id จากหน้าบ้าน
-    const { query, conversation_id } = req.body;
-
-    if (!query || !query.trim()) {
-        return res.status(400).json({ message: "กรุณากรอกข้อความค้นหา" });
-    }
+    const { query, conversation_id } = req.body; // รับคำขอกับรหัสบทสนทนาจากหน้าบ้าน
 
     try {
-        const prefResult = await pool.query(`SELECT pref_key, pref_value FROM user_preferences WHERE user_id = $1`, [userId]);
+        // ดึงคะแนนสะสมความชอบหมวดหมู่หนังของผู้ใช้จากฐานข้อมูล
+        const prefResult = await pool.query(
+            `SELECT pref_key, pref_value FROM user_preferences WHERE user_id = $1`, 
+            [userId]
+        );
         let userWeights = {};
-        prefResult.rows.forEach((row) => { userWeights[row.pref_key] = row.pref_value; });
+        prefResult.rows.forEach(row => { userWeights[row.pref_key] = row.pref_value; });
 
-        // 🟢 1. เปลี่ยน response_mode เป็น "streaming"
+        // เตรียม Payload ส่งให้ Dify โดยใช้โหมด streaming ตามข้อกำหนดของ Agent App
         const payload = {
-            inputs: { user_preferences: JSON.stringify(userWeights) },
+            inputs: { user_preferences: JSON.stringify(userWeights) }, // แนบประวัติความชอบ
             query: query,
             response_mode: "streaming", 
             user: `cinematch_user_${userId}`
@@ -531,22 +531,17 @@ app.post('/api/ai-search', authenticateToken, async (req, res) => {
             payload.conversation_id = conversation_id;
         }
 
+        // ยิงคำขอไปที่ Dify API Server
         const response = await fetch('https://api.dify.ai/v1/chat-messages', {
             method: 'POST',
             headers: { 
-                'Authorization': `Bearer ${process.env.DIFY_API_KEY}`, 
+                'Authorization': `Bearer ${process.env.DIFY_API_KEY}`, // ปลอดภัยเพราะดึงจาก Environment Variable
                 'Content-Type': 'application/json' 
             },
             body: JSON.stringify(payload)
         });
 
-        if (!response.ok) {
-            const errData = await response.text();
-            console.error("❌ Dify API Error:", errData);
-            throw new Error(`Dify ปฏิเสธการเชื่อมต่อ`);
-        }
-
-        // 🟢 2. เขียนระบบรับข้อมูลแบบ Streaming เอาชิ้นส่วนมาต่อกัน
+        // อ่านและประกอบร่างข้อมูลทีละชิ้น (Stream) จนเสร็จสิ้นที่ฝั่งหลังบ้าน
         const reader = response.body.getReader();
         const decoder = new TextDecoder("utf-8");
         let fullAnswer = "";
@@ -563,37 +558,35 @@ app.post('/api/ai-search', authenticateToken, async (req, res) => {
                 if (line.startsWith('data: ')) {
                     try {
                         const data = JSON.parse(line.slice(6));
-                        // ดึงข้อความจาก event agent_message หรือ message มาต่อกัน
                         if (data.event === 'message' || data.event === 'agent_message') {
                             fullAnswer += data.answer;
                         }
                         if (data.conversation_id) {
                             finalConversationId = data.conversation_id;
                         }
-                    } catch (e) {
-                        // ข้ามบรรทัดที่ข้อมูลยังมาไม่ครบ
-                    }
+                    } catch (e) { /* ข้ามบรรทัดที่ข้อมูลยังไม่สมบูรณ์ */ }
                 }
             }
         }
 
-        // 🟢 3. เมื่อต่อข้อความเสร็จแล้ว นำมาแปลงเป็น JSON เพื่อส่งให้หน้าบ้าน
+        // สกัดเอาเฉพาะก้อนเนื้อหา JSON ที่ CINE AI ตอบกลับมา
         const rawAnswer = fullAnswer.trim();
         const jsonMatch = rawAnswer.match(/\{[\s\S]*\}/);
         
-        if (!jsonMatch) {
-            console.error("❌ AI ไม่ได้ตอบเป็น JSON:", rawAnswer);
-            throw new Error("AI ตอบกลับมาผิดรูปแบบ");
-        }
+        if (!jsonMatch) throw new Error("AI ตอบกลับมาผิดรูปแบบโครงสร้าง");
 
         const finalData = JSON.parse(jsonMatch[0]);
-        finalData.conversation_id = finalConversationId;
+        finalData.conversation_id = finalConversationId; // แนบรหัสบทสนทนากลับไปให้หน้าบ้านจำ
 
         return res.status(200).json(finalData);
-        
+
     } catch (err) {
         console.error("AI Search Error:", err.message);
-        return res.status(500).json({ message: "ระบบ AI ขัดข้อง", ai_message: "ขออภัยค่ะ ระบบค้นหาเกิดข้อผิดพลาด", recommended_movie_ids: [] });
+        return res.status(500).json({ 
+            message: "ระบบขัดข้อง", 
+            ai_message: "ขออภัยค่ะ ระบบค้นหาเกิดข้อผิดพลาดชั่วคราว", 
+            recommended_movie_ids: [] 
+        });
     }
 });
 
