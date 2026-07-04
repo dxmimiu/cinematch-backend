@@ -35,7 +35,7 @@ const authenticateToken = (req, res, next) => {
 };
 
 // ==========================================
-// 2. ระบบ Auth (สมัครสมาชิก & ล็อกอิน)
+// 2. ระบบ Auth (สมัครสมาชิก & ล็อกอิน & เช็คสถานะ)
 // ==========================================
 app.post('/api/register', async (req, res) => {
     const { name, email, password } = req.body;
@@ -66,7 +66,8 @@ app.post('/api/register', async (req, res) => {
         );
         
         const userId = result.rows[0].id;
-        const token = jwt.sign({ id: userId, name, email }, SECRET_KEY);
+        // 🟢 เพิ่ม expiresIn: '3d'
+        const token = jwt.sign({ id: userId, name, email }, SECRET_KEY, { expiresIn: '3d' });
         
         res.status(201).json({ 
             token, 
@@ -90,7 +91,8 @@ app.post('/api/login', async (req, res) => {
             return res.status(400).json({ message: 'อีเมลหรือรหัสผ่านไม่ถูกต้อง' });
         }
 
-        const token = jwt.sign({ id: user.id, name: user.name, email: user.email }, SECRET_KEY);
+        // 🟢 เพิ่ม expiresIn: '3d'
+        const token = jwt.sign({ id: user.id, name: user.name, email: user.email }, SECRET_KEY, { expiresIn: '3d' });
         res.status(200).json({ 
             token, 
             user: { id: user.id, name: user.name, email: user.email, has_completed_quiz: user.has_completed_quiz } 
@@ -99,6 +101,23 @@ app.post('/api/login', async (req, res) => {
         console.error("Login Error:", err);
         res.status(500).json({ message: 'Database error' });
     }
+});
+
+// 🟢 เพิ่ม API เส้นใหม่ สำหรับเช็ค Token และทำ Sliding Expiration
+app.get('/api/verify', authenticateToken, (req, res) => {
+    // สร้าง Token ใบใหม่ที่มีอายุเริ่มนับหนึ่งใหม่ไปอีก 3 วัน
+    const newToken = jwt.sign(
+        { id: req.user.id, name: req.user.name, email: req.user.email }, 
+        SECRET_KEY, 
+        { expiresIn: '3d' } 
+    );
+
+    return res.status(200).json({ 
+        success: true, 
+        message: "Token is valid and extended",
+        token: newToken, 
+        user: req.user 
+    });
 });
 
 app.post('/api/preferences', authenticateToken, async (req, res) => {
@@ -140,8 +159,6 @@ app.post('/api/users/complete-quiz', authenticateToken, async (req, res) => {
 // ==========================================
 // 3. ระบบ Like / Dislike ภาพยนตร์ (เพิ่มฟีเจอร์ Batch สำหรับ Skip)
 // ==========================================
-
-// 🟢 โค้ดเดิม: สำหรับกดเลือกทีละเรื่อง
 app.post('/api/likes', authenticateToken, async (req, res) => {
     const { movie_id, film_id, action, type, media_type, movie_title, film_title, genres, points, poster_path } = req.body;
     const userId = req.user.id;
@@ -178,9 +195,8 @@ app.post('/api/likes', authenticateToken, async (req, res) => {
     }
 });
 
-// 🟢 โค้ดเพิ่มใหม่: รับข้อมูลแบบ Array (หลายเรื่องพร้อมกัน) ไว้ใช้ตอนกด Skip
 app.post('/api/likes/batch', authenticateToken, async (req, res) => {
-    const { skips } = req.body; // รับตัวแปรชื่อ skips ที่หน้าบ้านส่งมา
+    const { skips } = req.body; 
     const userId = req.user.id;
 
     if (!skips || !Array.isArray(skips)) {
@@ -188,7 +204,6 @@ app.post('/api/likes/batch', authenticateToken, async (req, res) => {
     }
 
     try {
-        // วนลูปทำงานทีละรายการ
         for (const item of skips) {
             const { movie_id, action, media_type, movie_title, poster_path, genres, points } = item;
             
@@ -202,13 +217,11 @@ app.post('/api/likes/batch', authenticateToken, async (req, res) => {
             );
 
             if (checkResult.rows.length > 0) {
-                // ถ้าเคยมีหนังเรื่องนี้อยู่ในระบบแล้ว (อาจจะเคยไลค์มาก่อน) ก็ให้อัปเดตเป็น Skip แทน
                 await pool.query(
                     `UPDATE user_likes SET action = $1, media_type = $2, movie_title = $3, poster_path = $4, genres = $5, points = $6 WHERE id = $7`, 
                     [action, media_type || 'movie', movie_title, poster_path, finalGenres, finalPoints, checkResult.rows[0].id]
                 );
             } else {
-                // ถ้ายังไม่เคยมีบันทึกเลย ให้เพิ่มใหม่
                 await pool.query(
                     `INSERT INTO user_likes (user_id, movie_id, action, media_type, movie_title, poster_path, genres, points) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, 
                     [userId, finalMovieId, action, media_type || 'movie', movie_title, poster_path, finalGenres, finalPoints]
@@ -221,7 +234,6 @@ app.post('/api/likes/batch', authenticateToken, async (req, res) => {
         return res.status(500).json({ message: "เกิดข้อผิดพลาดในการบันทึกฐานข้อมูลแบบกลุ่ม" });
     }
 });
-
 
 app.get('/api/likes', authenticateToken, async (req, res) => {
     const userId = req.user.id;
@@ -505,13 +517,11 @@ app.post('/api/rooms/match/:pin', authenticateToken, async (req, res) => {
 // ==========================================
 // AI Search Engine Endpoint
 // ==========================================
-// ตัวอย่างโค้ดใน server.js สำหรับระบบ CINEMATCH
 app.post('/api/ai-search', authenticateToken, async (req, res) => {
     const userId = req.user.id;
-    const { query, conversation_id } = req.body; // รับคำขอกับรหัสบทสนทนาจากหน้าบ้าน
+    const { query, conversation_id } = req.body; 
 
     try {
-        // ดึงคะแนนสะสมความชอบหมวดหมู่หนังของผู้ใช้จากฐานข้อมูล
         const prefResult = await pool.query(
             `SELECT pref_key, pref_value FROM user_preferences WHERE user_id = $1`, 
             [userId]
@@ -519,9 +529,8 @@ app.post('/api/ai-search', authenticateToken, async (req, res) => {
         let userWeights = {};
         prefResult.rows.forEach(row => { userWeights[row.pref_key] = row.pref_value; });
 
-        // เตรียม Payload ส่งให้ Dify โดยใช้โหมด streaming ตามข้อกำหนดของ Agent App
         const payload = {
-            inputs: { user_preferences: JSON.stringify(userWeights) }, // แนบประวัติความชอบ
+            inputs: { user_preferences: JSON.stringify(userWeights) }, 
             query: query,
             response_mode: "streaming", 
             user: `cinematch_user_${userId}`
@@ -531,17 +540,15 @@ app.post('/api/ai-search', authenticateToken, async (req, res) => {
             payload.conversation_id = conversation_id;
         }
 
-        // ยิงคำขอไปที่ Dify API Server
         const response = await fetch('https://api.dify.ai/v1/chat-messages', {
             method: 'POST',
             headers: { 
-                'Authorization': `Bearer ${process.env.DIFY_API_KEY}`, // ปลอดภัยเพราะดึงจาก Environment Variable
+                'Authorization': `Bearer ${process.env.DIFY_API_KEY}`, 
                 'Content-Type': 'application/json' 
             },
             body: JSON.stringify(payload)
         });
 
-        // อ่านและประกอบร่างข้อมูลทีละชิ้น (Stream) จนเสร็จสิ้นที่ฝั่งหลังบ้าน
         const reader = response.body.getReader();
         const decoder = new TextDecoder("utf-8");
         let fullAnswer = "";
@@ -569,7 +576,6 @@ app.post('/api/ai-search', authenticateToken, async (req, res) => {
             }
         }
 
-// 🟢 1. จัดการข้อความที่ตอบกลับมาให้ฉลาดและปลอดภัยขึ้น
         const rawAnswer = fullAnswer.trim();
         let finalData = {};
         
@@ -578,7 +584,6 @@ app.post('/api/ai-search', authenticateToken, async (req, res) => {
             if (jsonMatch) {
                 finalData = JSON.parse(jsonMatch[0]);
             } else {
-                // แผนสำรอง: ถ้า AI ดื้อ ไม่ตอบเป็น JSON ให้เอาข้อความทั้งหมดใส่กลับเข้าไป
                 finalData = {
                     ai_message: rawAnswer || "ขออภัยค่ะ CINE AI กำลังจัดเรียงข้อมูล รบกวนพิมพ์ใหม่อีกครั้งนะคะ",
                     recommended_movie_ids: []
