@@ -539,15 +539,22 @@ app.post('/api/ai-search', authenticateToken, async (req, res) => {
         });
 
         const difyData = await response.json();
-        if (!difyData.answer) throw new Error("ไม่ได้รับคำตอบจาก AI");
+        
+        // 🟢 เพิ่มการเช็ค Error จาก Dify แบบเจาะลึก
+        if (!response.ok || !difyData.answer) {
+            console.error("❌ Dify API Error Details:", difyData);
+            throw new Error(`Dify ปฏิเสธการเชื่อมต่อ: ${difyData.message || difyData.code || 'ไม่มีคำตอบ'}`);
+        }
 
         const rawAnswer = difyData.answer.trim();
         const jsonMatch = rawAnswer.match(/\{[\s\S]*\}/);
-        if (!jsonMatch) throw new Error("AI ไม่ได้ตอบในรูปแบบ JSON");
+        
+        if (!jsonMatch) {
+            console.error("❌ AI ไม่ได้ตอบเป็น JSON:", rawAnswer);
+            throw new Error("AI ตอบกลับมาผิดรูปแบบ");
+        }
 
         const finalData = JSON.parse(jsonMatch[0]);
-        
-        // 🟢 3. ดึงรหัสจำบทสนทนา (conversation_id) จาก Dify ส่งกลับไปให้หน้าบ้าน
         finalData.conversation_id = difyData.conversation_id;
 
         return res.status(200).json(finalData);
