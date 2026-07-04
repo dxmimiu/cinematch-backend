@@ -1,17 +1,3 @@
-const express = require('express');
-const cors = require('cors');
-const jwt = require('jsonwebtoken');
-const bcrypt = require('bcryptjs');
-
-const app = express();
-
-app.use(cors({
-    origin: '*', // หรือเปลี่ยนเป็น URL ของ Vercel เช่น 'https://cinematch-app.vercel.app'
-    methods: ['GET', 'POST', 'PUT', 'DELETE'],
-    allowedHeaders: ['Content-Type', 'Authorization']
-}));
-app.use(express.json());
-
 // ==========================================
 // 0. โหลด Environment Variables
 // ==========================================
@@ -34,7 +20,8 @@ if (missingEnv.length > 0) {
 }
 
 app.use(cors({
-    origin: process.env.FRONTEND_URL || 'https://cinematch-frontend-mauve.vercel.app/',
+    // ⚠️ ห้ามมี "/" ต่อท้าย URL ไม่งั้น browser จะส่ง origin ไม่ตรงแล้วโดน CORS บล็อก
+    origin: process.env.FRONTEND_URL || 'https://cinematch-frontend-mauve.vercel.app',
     methods: ['GET', 'POST', 'PUT', 'DELETE'],
     allowedHeaders: ['Content-Type', 'Authorization']
 }));
