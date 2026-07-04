@@ -1,43 +1,20 @@
-// ==========================================
-// 0. โหลด Environment Variables
-// ==========================================
-require('dotenv').config(); // อ่านค่าจากไฟล์ .env (ตอนรันในเครื่อง) — บน Render จะอ่านจาก Environment tab อัตโนมัติ
-
 const express = require('express');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
-const bcrypt = require('bcryptjs');
+const bcrypt = require('bcryptjs'); 
 
-const app = express(); // ✅ ต้องประกาศ app ก่อนเรียกใช้งานเสมอ
-
-// ==========================================
-// ตรวจสอบว่ามี ENV ที่จำเป็นครบหรือไม่ (กัน deploy พังแบบเงียบๆ)
-// ==========================================
-const REQUIRED_ENV = ['JWT_SECRET', 'TMDB_API_KEY', 'DIFY_API_KEY'];
-const missingEnv = REQUIRED_ENV.filter((key) => !process.env[key]);
-if (missingEnv.length > 0) {
-    console.warn(`⚠️  ขาด Environment Variables ต่อไปนี้: ${missingEnv.join(', ')} (ระบบบางส่วนอาจทำงานไม่ได้)`);
-}
-
-app.use(cors({
-    // ⚠️ ห้ามมี "/" ต่อท้าย URL ไม่งั้น browser จะส่ง origin ไม่ตรงแล้วโดน CORS บล็อก
-    origin: process.env.FRONTEND_URL || 'https://cinematch-frontend-mauve.vercel.app',
-    methods: ['GET', 'POST', 'PUT', 'DELETE'],
-    allowedHeaders: ['Content-Type', 'Authorization']
-}));
+const app = express();
+app.use(cors());
 app.use(express.json());
 
-const SECRET_KEY = process.env.JWT_SECRET;
-const TMDB_API_KEY = process.env.TMDB_API_KEY;
-const DIFY_API_KEY = process.env.DIFY_API_KEY;
-const TMDB_BASE = 'https://api.themoviedb.org/3';
+const SECRET_KEY = process.env.JWT_SECRET || 'cinematch_super_secret_key';
 
 // ==========================================
 // 1. เชื่อมต่อฐานข้อมูล Supabase (PostgreSQL)
 // ==========================================
-const { pool } = require('./database');
+const { pool } = require('./database'); 
 
-pool.query('SELECT NOW()', (err) => {
+pool.query('SELECT NOW()', (err, res) => {
     if (err) {
         console.error('เกิดข้อผิดพลาดในการเชื่อมต่อฐานข้อมูล:', err.message);
     } else {
@@ -58,25 +35,6 @@ const authenticateToken = (req, res, next) => {
 };
 
 // ==========================================
-// Reverse genre map ใช้ร่วมกันหลายจุด (กันเขียนซ้ำ)
-// ==========================================
-const REVERSE_GENRE_MAP = {
-    "แอคชั่นบู้ล้างผลาญ": 28, "ผจญภัย": 12, "แอนิเมชัน": 16, "ตลกขบขัน": 35, "อาชญากรรม": 80,
-    "สารคดี": 99, "ดราม่าเข้มข้น": 18, "ครอบครัว": 10751, "แฟนตาซีเวทมนตร์": 14, "ประวัติศาสตร์": 36,
-    "สยองขวัญ": 27, "มิวสิคัล": 10402, "ลึกลับซ่อนเงื่อน": 9648, "โรแมนติก": 10749, "ไซไฟอวกาศ": 878,
-    "ทีวีมูฟวี่": 10770, "ระทึกขวัญตื่นเต้น": 53, "สงคราม": 10752, "คาวบอยตะวันตก": 37
-};
-
-function buildTopGenreQuery(weights, topN = 3) {
-    const topGenres = Object.entries(weights)
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, topN)
-        .map(([name]) => REVERSE_GENRE_MAP[name])
-        .filter((id) => id);
-    return topGenres.length > 0 ? `&with_genres=${topGenres.join('|')}` : '';
-}
-
-// ==========================================
 // 2. ระบบ Auth (สมัครสมาชิก & ล็อกอิน)
 // ==========================================
 app.post('/api/register', async (req, res) => {
@@ -85,10 +43,10 @@ app.post('/api/register', async (req, res) => {
 
     try {
         const checkUser = await pool.query(
-            `SELECT id, name, email FROM users WHERE email = $1 OR name = $2`,
+            `SELECT id, name, email FROM users WHERE email = $1 OR name = $2`, 
             [email, name]
         );
-
+        
         if (checkUser.rows.length > 0) {
             const existingUser = checkUser.rows[0];
             if (existingUser.name === name) {
@@ -101,29 +59,29 @@ app.post('/api/register', async (req, res) => {
 
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
-
+        
         const result = await pool.query(
-            `INSERT INTO users (name, email, password, has_completed_quiz) VALUES ($1, $2, $3, 0) RETURNING id`,
+            `INSERT INTO users (name, email, password, has_completed_quiz) VALUES ($1, $2, $3, 0) RETURNING id`, 
             [name, email, hashedPassword]
         );
-
+        
         const userId = result.rows[0].id;
         const token = jwt.sign({ id: userId, name, email }, SECRET_KEY);
-
-        res.status(201).json({
-            token,
-            user: { id: userId, name, email, has_completed_quiz: 0 }
+        
+        res.status(201).json({ 
+            token, 
+            user: { id: userId, name, email, has_completed_quiz: 0 } 
         });
     } catch (err) {
-        console.error("Register Error:", err);
-        return res.status(500).json({ message: 'เกิดข้อผิดพลาดภายในเซิร์ฟเวอร์' });
+        console.error("Register Error:", err); 
+        return res.status(500).json({ message: 'เกิดข้อผิดพลาดภายในเซิร์ฟเวอร์' }); 
     }
 });
 
 app.post('/api/login', async (req, res) => {
     const { email, password } = req.body;
     if (!email || !password) return res.status(400).json({ message: 'กรุณากรอกข้อมูลให้ครบถ้วน' });
-
+    
     try {
         const result = await pool.query(`SELECT * FROM users WHERE email = $1`, [email]);
         const user = result.rows[0];
@@ -133,9 +91,9 @@ app.post('/api/login', async (req, res) => {
         }
 
         const token = jwt.sign({ id: user.id, name: user.name, email: user.email }, SECRET_KEY);
-        res.status(200).json({
-            token,
-            user: { id: user.id, name: user.name, email: user.email, has_completed_quiz: user.has_completed_quiz }
+        res.status(200).json({ 
+            token, 
+            user: { id: user.id, name: user.name, email: user.email, has_completed_quiz: user.has_completed_quiz } 
         });
     } catch (err) {
         console.error("Login Error:", err);
@@ -180,34 +138,36 @@ app.post('/api/users/complete-quiz', authenticateToken, async (req, res) => {
 });
 
 // ==========================================
-// 3. ระบบ Like / Dislike ภาพยนตร์
+// 3. ระบบ Like / Dislike ภาพยนตร์ (เพิ่มฟีเจอร์ Batch สำหรับ Skip)
 // ==========================================
+
+// 🟢 โค้ดเดิม: สำหรับกดเลือกทีละเรื่อง
 app.post('/api/likes', authenticateToken, async (req, res) => {
     const { movie_id, film_id, action, type, media_type, movie_title, film_title, genres, points, poster_path } = req.body;
     const userId = req.user.id;
-
-    const finalMovieId = String(movie_id || film_id);
+    
+    const finalMovieId = String(movie_id || film_id); 
     const finalAction = action || type;
     const finalTitle = movie_title || film_title || null;
     const finalPoster = poster_path || null;
     const finalGenres = typeof genres === 'object' ? JSON.stringify(genres) : (genres || null);
-    const finalPoints = parseInt(points) || 0;
+    const finalPoints = parseInt(points) || 0; 
 
     try {
         const checkResult = await pool.query(
-            `SELECT id FROM user_likes WHERE user_id = $1 AND movie_id = $2`,
+            `SELECT id FROM user_likes WHERE user_id = $1 AND movie_id = $2`, 
             [userId, finalMovieId]
         );
-
+          
         if (checkResult.rows.length > 0) {
             await pool.query(
-                `UPDATE user_likes SET action = $1, media_type = $2, movie_title = $3, poster_path = $4, genres = $5, points = $6 WHERE id = $7`,
+                `UPDATE user_likes SET action = $1, media_type = $2, movie_title = $3, poster_path = $4, genres = $5, points = $6 WHERE id = $7`, 
                 [finalAction, media_type || 'movie', finalTitle, finalPoster, finalGenres, finalPoints, checkResult.rows[0].id]
             );
             return res.status(200).json({ message: "อัปเดตข้อมูลและคะแนนสำเร็จ" });
         } else {
             await pool.query(
-                `INSERT INTO user_likes (user_id, movie_id, action, media_type, movie_title, poster_path, genres, points) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+                `INSERT INTO user_likes (user_id, movie_id, action, media_type, movie_title, poster_path, genres, points) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, 
                 [userId, finalMovieId, finalAction, media_type || 'movie', finalTitle, finalPoster, finalGenres, finalPoints]
             );
             return res.status(200).json({ message: "บันทึกข้อมูลและคะแนนสำเร็จ" });
@@ -218,8 +178,9 @@ app.post('/api/likes', authenticateToken, async (req, res) => {
     }
 });
 
+// 🟢 โค้ดเพิ่มใหม่: รับข้อมูลแบบ Array (หลายเรื่องพร้อมกัน) ไว้ใช้ตอนกด Skip
 app.post('/api/likes/batch', authenticateToken, async (req, res) => {
-    const { skips } = req.body;
+    const { skips } = req.body; // รับตัวแปรชื่อ skips ที่หน้าบ้านส่งมา
     const userId = req.user.id;
 
     if (!skips || !Array.isArray(skips)) {
@@ -227,26 +188,29 @@ app.post('/api/likes/batch', authenticateToken, async (req, res) => {
     }
 
     try {
+        // วนลูปทำงานทีละรายการ
         for (const item of skips) {
             const { movie_id, action, media_type, movie_title, poster_path, genres, points } = item;
-
+            
             const finalMovieId = String(movie_id);
             const finalGenres = typeof genres === 'object' ? JSON.stringify(genres) : (genres || null);
             const finalPoints = parseInt(points) || 0;
 
             const checkResult = await pool.query(
-                `SELECT id FROM user_likes WHERE user_id = $1 AND movie_id = $2`,
+                `SELECT id FROM user_likes WHERE user_id = $1 AND movie_id = $2`, 
                 [userId, finalMovieId]
             );
 
             if (checkResult.rows.length > 0) {
+                // ถ้าเคยมีหนังเรื่องนี้อยู่ในระบบแล้ว (อาจจะเคยไลค์มาก่อน) ก็ให้อัปเดตเป็น Skip แทน
                 await pool.query(
-                    `UPDATE user_likes SET action = $1, media_type = $2, movie_title = $3, poster_path = $4, genres = $5, points = $6 WHERE id = $7`,
+                    `UPDATE user_likes SET action = $1, media_type = $2, movie_title = $3, poster_path = $4, genres = $5, points = $6 WHERE id = $7`, 
                     [action, media_type || 'movie', movie_title, poster_path, finalGenres, finalPoints, checkResult.rows[0].id]
                 );
             } else {
+                // ถ้ายังไม่เคยมีบันทึกเลย ให้เพิ่มใหม่
                 await pool.query(
-                    `INSERT INTO user_likes (user_id, movie_id, action, media_type, movie_title, poster_path, genres, points) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+                    `INSERT INTO user_likes (user_id, movie_id, action, media_type, movie_title, poster_path, genres, points) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, 
                     [userId, finalMovieId, action, media_type || 'movie', movie_title, poster_path, finalGenres, finalPoints]
                 );
             }
@@ -258,11 +222,12 @@ app.post('/api/likes/batch', authenticateToken, async (req, res) => {
     }
 });
 
+
 app.get('/api/likes', authenticateToken, async (req, res) => {
     const userId = req.user.id;
     try {
         const result = await pool.query(
-            `SELECT movie_id, action, media_type, movie_title, poster_path, genres, points FROM user_likes WHERE user_id = $1 ORDER BY id DESC`,
+            `SELECT movie_id, action, media_type, movie_title, poster_path, genres, points FROM user_likes WHERE user_id = $1 ORDER BY id DESC`, 
             [userId]
         );
         res.status(200).json(result.rows);
@@ -278,7 +243,7 @@ app.delete('/api/likes/:movie_id', authenticateToken, async (req, res) => {
 
     try {
         await pool.query(
-            `DELETE FROM user_likes WHERE user_id = $1 AND movie_id = $2`,
+            `DELETE FROM user_likes WHERE user_id = $1 AND movie_id = $2`, 
             [userId, movieId]
         );
         res.status(200).json({ message: 'ลบข้อมูลสำเร็จ' });
@@ -294,7 +259,7 @@ app.delete('/api/likes/:movie_id', authenticateToken, async (req, res) => {
 app.post('/api/recommendations', authenticateToken, async (req, res) => {
     try {
         const userId = req.user.id;
-
+        
         const prefResult = await pool.query(
             `SELECT pref_key, pref_value FROM user_preferences WHERE user_id = $1`,
             [userId]
@@ -302,32 +267,46 @@ app.post('/api/recommendations', authenticateToken, async (req, res) => {
 
         let userWeights = {};
         if (prefResult.rows.length > 0) {
-            prefResult.rows.forEach((row) => {
+            prefResult.rows.forEach(row => {
                 userWeights[row.pref_key] = row.pref_value;
             });
         } else {
             userWeights = req.body.genreWeights || {};
         }
-
+        
         if (Object.keys(userWeights).length === 0) {
             return res.status(200).json([]);
         }
 
-        const genreQuery = buildTopGenreQuery(userWeights);
+        const REVERSE_GENRE_MAP = {
+            "แอคชั่นบู้ล้างผลาญ": 28, "ผจญภัย": 12, "แอนิเมชัน": 16, "ตลกขบขัน": 35, "อาชญากรรม": 80,
+            "สารคดี": 99, "ดราม่าเข้มข้น": 18, "ครอบครัว": 10751, "แฟนตาซีเวทมนตร์": 14, "ประวัติศาสตร์": 36,
+            "สยองขวัญ": 27, "มิวสิคัล": 10402, "ลึกลับซ่อนเงื่อน": 9648, "โรแมนติก": 10749, "ไซไฟอวกาศ": 878,
+            "ทีวีมูฟวี่": 10770, "ระทึกขวัญตื่นเต้น": 53, "สงคราม": 10752, "คาวบอยตะวันตก": 37
+        };
+
+        const topGenres = Object.entries(userWeights)
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 3) 
+            .map(([name]) => REVERSE_GENRE_MAP[name])
+            .filter(id => id);
+
+        const genreQuery = topGenres.length > 0 ? `&with_genres=${topGenres.join('|')}` : '';
+        const API_KEY = "181edc5801db6678de6ccb2864149a6a";
 
         const fetchPromises = [];
         for (let page = 1; page <= 3; page++) {
-            fetchPromises.push(fetch(`${TMDB_BASE}/discover/movie?api_key=${TMDB_API_KEY}&language=th-TH&sort_by=popularity.desc${genreQuery}&page=${page}`));
-            fetchPromises.push(fetch(`${TMDB_BASE}/discover/tv?api_key=${TMDB_API_KEY}&language=th-TH&sort_by=popularity.desc${genreQuery}&page=${page}`));
+            fetchPromises.push(fetch(`https://api.themoviedb.org/3/discover/movie?api_key=${API_KEY}&language=th-TH&sort_by=popularity.desc${genreQuery}&page=${page}`));
+            fetchPromises.push(fetch(`https://api.themoviedb.org/3/discover/tv?api_key=${API_KEY}&language=th-TH&sort_by=popularity.desc${genreQuery}&page=${page}`));
         }
 
         const responses = await Promise.all(fetchPromises);
-        const dataJsons = await Promise.all(responses.map((r) => r.json()));
+        const dataJsons = await Promise.all(responses.map(res => res.json()));
 
         let allItems = [];
         dataJsons.forEach((data, index) => {
-            const isTV = index % 2 !== 0;
-            const formatted = (data.results || []).map((item) => ({
+            const isTV = index % 2 !== 0; 
+            const formatted = (data.results || []).map(item => ({
                 ...item,
                 title: isTV ? item.name : item.title,
                 release_date: isTV ? item.first_air_date : item.release_date,
@@ -336,11 +315,11 @@ app.post('/api/recommendations', authenticateToken, async (req, res) => {
             allItems = [...allItems, ...formatted];
         });
 
-        const scoredItems = allItems.map((item) => {
-            let matchScore = 0;
+        const scoredItems = allItems.map(item => {
+            let matchScore = 0; 
             if (item.genre_ids) {
-                item.genre_ids.forEach((id) => {
-                    const genreNameKey = Object.keys(REVERSE_GENRE_MAP).find((k) => REVERSE_GENRE_MAP[k] === id);
+                item.genre_ids.forEach(id => {
+                    const genreNameKey = Object.keys(REVERSE_GENRE_MAP).find(k => REVERSE_GENRE_MAP[k] === id);
                     if (genreNameKey && userWeights[genreNameKey]) {
                         matchScore += userWeights[genreNameKey];
                     }
@@ -360,17 +339,18 @@ app.post('/api/recommendations', authenticateToken, async (req, res) => {
             }
         }
 
-        const topScore = uniqueItems[0]?.rawScore || 1;
+        const topScore = uniqueItems[0]?.rawScore || 1; 
         const finalResults = uniqueItems.map((item, index) => {
-            let percent = 98;
+            let percent = 98; 
             if (index > 0) {
                 percent = Math.floor((item.rawScore * 98) / topScore);
-                if (percent >= 98) percent = 98 - index;
+                if (percent >= 98) percent = 98 - index; 
             }
             return { ...item, matchPercent: percent };
         });
 
         res.status(200).json(finalResults.slice(0, 10));
+
     } catch (err) {
         console.error("Recommendations Error:", err);
         res.status(500).json({ message: "เกิดข้อผิดพลาดในการประมวลผลคำแนะนำ" });
@@ -378,84 +358,9 @@ app.post('/api/recommendations', authenticateToken, async (req, res) => {
 });
 
 // ==========================================
-// 4.1 ระบบ AI Search (เชื่อมต่อ Dify API Secure Proxy)
-// ==========================================
-app.post('/api/ai-search', authenticateToken, async (req, res) => {
-    const userId = req.user.id;
-    const { query } = req.body;
-
-    if (!query || !query.trim()) {
-        return res.status(400).json({ message: "กรุณากรอกข้อความค้นหา" });
-    }
-
-    if (!DIFY_API_KEY) {
-        console.error("DIFY_API_KEY is not set in environment variables");
-        return res.status(500).json({
-            message: "ระบบ AI ยังไม่ได้ตั้งค่า",
-            ai_message: "ขออภัยค่ะ ระบบ AI ยังไม่พร้อมใช้งานในขณะนี้",
-            recommended_movie_ids: []
-        });
-    }
-
-    try {
-        const prefResult = await pool.query(
-            `SELECT pref_key, pref_value FROM user_preferences WHERE user_id = $1`,
-            [userId]
-        );
-
-        let userWeights = {};
-        prefResult.rows.forEach((row) => { userWeights[row.pref_key] = row.pref_value; });
-
-        const response = await fetch('https://api.dify.ai/v1/chat-messages', {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${DIFY_API_KEY}`,
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                inputs: { user_preferences: JSON.stringify(userWeights) },
-                query: query,
-                response_mode: "blocking",
-                user: `cinematch_user_${userId}`
-            })
-        });
-
-        const difyData = await response.json();
-
-        if (!difyData.answer) {
-            throw new Error("ไม่ได้รับคำตอบจากระบบประมวลผลอัจฉริยะ");
-        }
-
-        // --- ทำความสะอาดและแปลง JSON อย่างปลอดภัย ---
-        // ดึงเฉพาะก้อน { ... } ออกมา เผื่อโมเดลแอบใส่ markdown fences หรือข้อความอื่นแถมมา
-        const rawAnswer = difyData.answer.trim();
-        const jsonMatch = rawAnswer.match(/\{[\s\S]*\}/);
-
-        if (!jsonMatch) {
-            throw new Error("AI ไม่ได้ตอบกลับในรูปแบบ JSON ที่กำหนด");
-        }
-
-        const finalData = JSON.parse(jsonMatch[0]);
-
-        // กันเคส field หาย ไม่ให้ frontend พัง
-        if (!('ai_message' in finalData)) finalData.ai_message = "นี่คือหนังที่แนะนำค่ะ";
-        if (!Array.isArray(finalData.recommended_movie_ids)) finalData.recommended_movie_ids = [];
-
-        return res.status(200).json(finalData);
-    } catch (err) {
-        console.error("AI Search Engine Error:", err.message);
-        return res.status(500).json({
-            message: "ระบบประมวลผลอัจฉริยะขัดข้อง",
-            ai_message: "ขออภัยค่ะ ระบบค้นหาเกิดข้อผิดพลาด ลองใหม่อีกครั้งนะคะ",
-            recommended_movie_ids: []
-        });
-    }
-});
-
-// ==========================================
 // 5. ระบบ Duo Match (สร้างห้องและจับคู่)
 // ==========================================
-const activeRooms = {};
+const activeRooms = {}; 
 
 app.post('/api/rooms/create', authenticateToken, (req, res) => {
     const { hostName, genreWeights } = req.body;
@@ -479,7 +384,7 @@ app.post('/api/rooms/join', authenticateToken, (req, res) => {
     if (activeRooms[pin].guest) return res.status(400).json({ message: 'ห้องนี้เต็มแล้ว' });
 
     activeRooms[pin].guest = { name: guestName, weights: genreWeights || {} };
-    activeRooms[pin].status = 'ready';
+    activeRooms[pin].status = 'ready'; 
 
     res.status(200).json({ message: 'เข้าร่วมห้องสำเร็จ', hostName: activeRooms[pin].host.name });
 });
@@ -488,7 +393,7 @@ app.get('/api/rooms/status/:pin', authenticateToken, (req, res) => {
     const { pin } = req.params;
     if (!activeRooms[pin]) return res.status(404).json({ message: 'ไม่พบห้อง' });
 
-    res.status(200).json({
+    res.status(200).json({ 
         status: activeRooms[pin].status,
         hostName: activeRooms[pin].host.name,
         guestName: activeRooms[pin].guest ? activeRooms[pin].guest.name : null,
@@ -510,39 +415,53 @@ app.post('/api/rooms/match/:pin', authenticateToken, async (req, res) => {
 
         const combinedWeights = {};
         const allKeys = new Set([...Object.keys(hostWeights), ...Object.keys(guestWeights)]);
-
-        allKeys.forEach((key) => {
+        
+        allKeys.forEach(key => {
             combinedWeights[key] = (hostWeights[key] || 0) + (guestWeights[key] || 0);
         });
 
-        const genreQuery = buildTopGenreQuery(combinedWeights);
+        const REVERSE_GENRE_MAP = {
+            "แอคชั่นบู้ล้างผลาญ": 28, "ผจญภัย": 12, "แอนิเมชัน": 16, "ตลกขบขัน": 35, "อาชญากรรม": 80,
+            "สารคดี": 99, "ดราม่าเข้มข้น": 18, "ครอบครัว": 10751, "แฟนตาซีเวทมนตร์": 14, "ประวัติศาสตร์": 36,
+            "สยองขวัญ": 27, "มิวสิคัล": 10402, "ลึกลับซ่อนเงื่อน": 9648, "โรแมนติก": 10749, "ไซไฟอวกาศ": 878,
+            "ทีวีมูฟวี่": 10770, "ระทึกขวัญตื่นเต้น": 53, "สงคราม": 10752, "คาวบอยตะวันตก": 37
+        };
+
+        const topGenres = Object.entries(combinedWeights)
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 3) 
+            .map(([name]) => REVERSE_GENRE_MAP[name])
+            .filter(id => id);
+
+        const genreQuery = topGenres.length > 0 ? `&with_genres=${topGenres.join('|')}` : '';
+        const API_KEY = "181edc5801db6678de6ccb2864149a6a";
 
         const fetchPromises = [];
         for (let page = 1; page <= 5; page++) {
-            fetchPromises.push(fetch(`${TMDB_BASE}/discover/movie?api_key=${TMDB_API_KEY}&language=th-TH&sort_by=popularity.desc${genreQuery}&page=${page}`));
-            fetchPromises.push(fetch(`${TMDB_BASE}/discover/tv?api_key=${TMDB_API_KEY}&language=th-TH&sort_by=popularity.desc${genreQuery}&page=${page}`));
+            fetchPromises.push(fetch(`https://api.themoviedb.org/3/discover/movie?api_key=${API_KEY}&language=th-TH&sort_by=popularity.desc${genreQuery}&page=${page}`));
+            fetchPromises.push(fetch(`https://api.themoviedb.org/3/discover/tv?api_key=${API_KEY}&language=th-TH&sort_by=popularity.desc${genreQuery}&page=${page}`));
         }
 
         const responses = await Promise.all(fetchPromises);
-        const dataJsons = await Promise.all(responses.map((r) => r.json()));
+        const dataJsons = await Promise.all(responses.map(res => res.json()));
 
         let allItems = [];
         dataJsons.forEach((data, index) => {
-            const isTV = index % 2 !== 0;
-            const formatted = (data.results || []).map((item) => ({
+            const isTV = index % 2 !== 0; 
+            const formatted = (data.results || []).map(item => ({
                 ...item,
-                title: isTV ? item.name : item.title,
+                title: isTV ? item.name : item.title, 
                 release_date: isTV ? item.first_air_date : item.release_date,
                 media_type: isTV ? 'tv' : 'movie'
             }));
             allItems = [...allItems, ...formatted];
         });
 
-        const scoredItems = allItems.map((item) => {
-            let matchScore = 0;
+        const scoredItems = allItems.map(item => {
+            let matchScore = 0; 
             if (item.genre_ids) {
-                item.genre_ids.forEach((id) => {
-                    const genreNameKey = Object.keys(REVERSE_GENRE_MAP).find((k) => REVERSE_GENRE_MAP[k] === id);
+                item.genre_ids.forEach(id => {
+                    const genreNameKey = Object.keys(REVERSE_GENRE_MAP).find(k => REVERSE_GENRE_MAP[k] === id);
                     if (genreNameKey && combinedWeights[genreNameKey]) {
                         matchScore += combinedWeights[genreNameKey];
                     }
@@ -562,23 +481,93 @@ app.post('/api/rooms/match/:pin', authenticateToken, async (req, res) => {
             }
         }
 
-        const topScore = uniqueItems[0]?.rawScore || 1;
+        const topScore = uniqueItems[0]?.rawScore || 1; 
         const finalResults = uniqueItems.map((item, index) => {
-            let percent = 98;
+            let percent = 98; 
             if (index > 0) {
                 percent = Math.floor((item.rawScore * 98) / topScore);
-                if (percent >= 98) percent = 98 - index;
+                if (percent >= 98) percent = 98 - index; 
             }
             return { ...item, matchPercent: percent };
         });
 
-        room.results = finalResults.slice(0, 10);
+        room.results = finalResults.slice(0, 10); 
         room.status = 'completed';
 
         res.status(200).json(room.results);
+
     } catch (err) {
         console.error("Duo Match Error:", err);
         res.status(500).json({ message: "เกิดข้อผิดพลาดในการประมวลผล" });
+    }
+});
+
+// ==========================================
+// AI Search Engine Endpoint
+// ==========================================
+app.post('/api/ai-search', authenticateToken, async (req, res) => {
+    const userId = req.user.id;
+    const { query } = req.body;
+
+    // ตรวจสอบเงื่อนไขข้อมูลนำเข้า
+    if (!query || !query.trim()) {
+        return res.status(400).json({ message: "กรุณากรอกข้อความค้นหา" });
+    }
+
+    try {
+        // [Flow: AI Engine] ดึงคะแนนความชอบสะสม (Weights) ของผู้ใช้จาก Database
+        const prefResult = await pool.query(
+            `SELECT pref_key, pref_value FROM user_preferences WHERE user_id = $1`,
+            [userId]
+        );
+
+        let userWeights = {};
+        prefResult.rows.forEach(row => {
+            userWeights[row.pref_key] = row.pref_value;
+        });
+
+        // เรียกใช้งาน Dify API 
+        const response = await fetch('https://api.dify.ai/v1/chat-messages', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${process.env.DIFY_API_KEY || 'app-sc7f4lP0zQaKRZoTAcMMoWPF'}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                inputs: {
+                    user_preferences: JSON.stringify(userWeights) // แนบคะแนนสะสมส่งให้ AI
+                },
+                query: query,
+                response_mode: "blocking",
+                user: `cinematch_user_${userId}`
+            })
+        });
+
+        const difyData = await response.json();
+        
+        if (!difyData.answer) {
+            throw new Error("ไม่ได้รับคำตอบจาก AI Agent");
+        }
+
+        // [Flow: Keyword Matching] สกัดเอาเฉพาะก้อน JSON ออกมาจากข้อความตอบกลับของ AI
+        const rawAnswer = difyData.answer.trim();
+        const jsonMatch = rawAnswer.match(/\{[\s\S]*\}/);
+
+        if (!jsonMatch) {
+            throw new Error("AI ส่งข้อมูลกลับมาไม่ตรงตามรูปแบบโครงสร้างที่กำหนด");
+        }
+
+        // แปลงข้อความสัญญลักษณ์กลับเป็น Object แล้วส่งออกไปให้หน้าบ้าน
+        const finalJson = JSON.parse(jsonMatch[0]);
+        return res.status(200).json(finalJson);
+
+    } catch (err) {
+        console.error("AI Search Engine Error:", err.message);
+        return res.status(500).json({ 
+            message: "ระบบเกิดข้อผิดพลาด",
+            ai_message: "ขออภัยด้วยนะคะ ระบบค้นหาอัจฉริยะขัดข้องชั่วคราว ลองพิมพ์ใหม่อีกครั้งได้ไหมคะ?",
+            recommended_movie_ids: []
+        });
     }
 });
 
