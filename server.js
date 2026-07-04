@@ -34,7 +34,7 @@ if (missingEnv.length > 0) {
 }
 
 app.use(cors({
-    origin: process.env.FRONTEND_URL || '*', // ควรเปลี่ยนเป็น URL จริงของ Vercel เช่น 'https://cinematch-app.vercel.app'
+    origin: process.env.FRONTEND_URL || 'https://cinematch-frontend-mauve.vercel.app/',
     methods: ['GET', 'POST', 'PUT', 'DELETE'],
     allowedHeaders: ['Content-Type', 'Authorization']
 }));
