@@ -498,22 +498,43 @@ app.post('/api/rooms/match/:pin', authenticateToken, async (req, res) => {
 // ==========================================
 // AI Search Engine Endpoint
 // ==========================================
+// ==========================================
+// AI Search Engine Endpoint
+// ==========================================
 app.post('/api/ai-search', authenticateToken, async (req, res) => {
     const userId = req.user.id;
-    const { query, conversation_id } = req.body; 
+    const { query, conversation_id } = req.body;
+
+    if (!query || !query.trim()) {
+        return res.status(400).json({
+            message: 'กรุณาระบุข้อความ',
+            ai_message: 'กรุณาพิมพ์ข้อความก่อนนะคะ',
+            recommended_movie_ids: [],
+            movies: [],
+            conversation_id: conversation_id || null
+        });
+    }
+
+    if (!process.env.DIFY_API_KEY) {
+        console.error('DIFY_API_KEY is missing');
+
+        return res.status(500).json({
+            message: 'Backend ไม่พบ DIFY_API_KEY',
+            ai_message: 'ระบบ CINE AI ยังไม่ได้ตั้งค่า API Key ค่ะ',
+            recommended_movie_ids: [],
+            movies: [],
+            conversation_id: conversation_id || null
+        });
+    }
 
     try {
-        const prefResult = await pool.query(
-            `SELECT pref_key, pref_value FROM user_preferences WHERE user_id = $1`, 
-            [userId]
-        );
-        let userWeights = {};
-        prefResult.rows.forEach(row => { userWeights[row.pref_key] = row.pref_value; });
-
         const payload = {
-            inputs: { user_preferences: JSON.stringify(userWeights) }, 
-            query: query,
-            response_mode: "streaming", 
+            inputs: {
+                // ต้องตรงกับตัวแปร {{user_id}} ใน Dify
+                user_id: String(userId)
+            },
+            query: query.trim(),
+            response_mode: 'blocking',
             user: `cinematch_user_${userId}`
         };
 
@@ -521,72 +542,140 @@ app.post('/api/ai-search', authenticateToken, async (req, res) => {
             payload.conversation_id = conversation_id;
         }
 
-        const response = await fetch('https://api.dify.ai/v1/chat-messages', {
-            method: 'POST',
-            headers: { 
-                'Authorization': `Bearer ${process.env.DIFY_API_KEY}`, 
-                'Content-Type': 'application/json' 
-            },
-            body: JSON.stringify(payload)
+        const difyResponse = await fetch(
+            'https://api.dify.ai/v1/chat-messages',
+            {
+                method: 'POST',
+                headers: {
+                    Authorization: `Bearer ${process.env.DIFY_API_KEY}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(payload)
+            }
+        );
+
+        const responseText = await difyResponse.text();
+
+        if (!difyResponse.ok) {
+            console.error(
+                'Dify API Error:',
+                difyResponse.status,
+                responseText
+            );
+
+            return res.status(502).json({
+                message: `Dify API Error ${difyResponse.status}`,
+                ai_message:
+                    'ขออภัยค่ะ ระบบ CINE AI เชื่อมต่อไม่สำเร็จ กรุณาลองใหม่อีกครั้ง',
+                recommended_movie_ids: [],
+                movies: [],
+                conversation_id: conversation_id || null
+            });
+        }
+
+        let difyData;
+
+        try {
+            difyData = JSON.parse(responseText);
+        } catch (parseError) {
+            console.error('Invalid Dify JSON:', responseText);
+
+            return res.status(502).json({
+                message: 'Dify ส่งข้อมูลกลับมาในรูปแบบไม่ถูกต้อง',
+                ai_message:
+                    'ขออภัยค่ะ ระบบได้รับข้อมูลผิดรูปแบบ กรุณาลองใหม่อีกครั้ง',
+                recommended_movie_ids: [],
+                movies: [],
+                conversation_id: conversation_id || null
+            });
+        }
+
+        const rawAnswer = String(difyData.answer || '').trim();
+        const finalConversationId =
+            difyData.conversation_id ||
+            conversation_id ||
+            null;
+
+        if (!rawAnswer) {
+            console.error('Dify returned empty answer:', difyData);
+
+            return res.status(502).json({
+                message: 'Dify ไม่ส่งข้อความตอบกลับ',
+                ai_message:
+                    'ขออภัยค่ะ CINE AI ยังไม่สามารถสร้างคำตอบได้ กรุณาลองพิมพ์ใหม่',
+                recommended_movie_ids: [],
+                movies: [],
+                conversation_id: finalConversationId
+            });
+        }
+
+        // แยกข้อความสนทนาออกจาก JSON
+        const aiMessage = rawAnswer
+            .replace(/```json\s*[\s\S]*?\s*```/i, '')
+            .trim();
+
+        let movies = [];
+
+        // รูปแบบที่ Instructions กำหนด: ```json [...] ```
+        const fencedJsonMatch = rawAnswer.match(
+            /```json\s*([\s\S]*?)\s*```/i
+        );
+
+        // รองรับกรณี Dify ส่ง Array โดยไม่มี markdown
+        const plainArrayMatch = rawAnswer.match(
+            /(\[\s*\{[\s\S]*\}\s*\])/
+        );
+
+        const jsonText =
+            fencedJsonMatch?.[1] ||
+            plainArrayMatch?.[1] ||
+            '';
+
+        if (jsonText) {
+            try {
+                const parsedMovies = JSON.parse(jsonText);
+
+                if (Array.isArray(parsedMovies)) {
+                    movies = parsedMovies
+                        .filter(movie => movie && movie.id)
+                        .slice(0, 3)
+                        .map(movie => ({
+                            id: Number(movie.id),
+                            title: movie.title || '',
+                            poster_path: movie.poster_path || null,
+                            reason: movie.reason || ''
+                        }));
+                }
+            } catch (jsonError) {
+                console.error(
+                    'Movie JSON Parse Error:',
+                    jsonError,
+                    jsonText
+                );
+            }
+        }
+
+        return res.status(200).json({
+            ai_message:
+                aiMessage ||
+                (movies.length > 0
+                    ? 'นี่คือภาพยนตร์ที่เลือกมาแนะนำให้คุณค่ะ'
+                    : rawAnswer),
+            recommended_movie_ids: movies.map(movie => movie.id),
+            movies,
+            conversation_id: finalConversationId
         });
 
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder("utf-8");
-        let fullAnswer = "";
-        let finalConversationId = conversation_id;
+    } catch (error) {
+        console.error('AI Search Error:', error);
 
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            
-            const chunk = decoder.decode(value, { stream: true });
-            const lines = chunk.split('\n');
-            
-            for (const line of lines) {
-                if (line.startsWith('data: ')) {
-                    try {
-                        const data = JSON.parse(line.slice(6));
-                        if (data.event === 'message' || data.event === 'agent_message') {
-                            fullAnswer += data.answer;
-                        }
-                        if (data.conversation_id) {
-                            finalConversationId = data.conversation_id;
-                        }
-                    } catch (e) { /* ข้ามบรรทัดที่ข้อมูลยังไม่สมบูรณ์ */ }
-                }
-            }
-        }
-
-        const rawAnswer = fullAnswer.trim();
-        let finalData = {};
-        
-        try {
-            const jsonMatch = rawAnswer.match(/\{[\s\S]*\}/);
-            if (jsonMatch) {
-                finalData = JSON.parse(jsonMatch[0]);
-            } else {
-                finalData = {
-                    ai_message: rawAnswer || "ขออภัยค่ะ CINE AI กำลังจัดเรียงข้อมูล รบกวนพิมพ์ใหม่อีกครั้งนะคะ",
-                    recommended_movie_ids: []
-                };
-            }
-        } catch (e) {
-            console.error("JSON Parse Error:", e, "Raw Data:", rawAnswer);
-            finalData = {
-                ai_message: "ข้อความจาก CINE AI มีรูปแบบผิดปกติชั่วคราวค่ะ ลองพิมพ์ประโยคอื่นดูนะคะ",
-                recommended_movie_ids: []
-            };
-        }
-
-        finalData.conversation_id = finalConversationId;
-        return res.status(200).json(finalData);
-
-    } catch (err) {
-        console.error("AI Search Error:", err.message);
-        return res.status(500).json({ 
-            message: "ระบบขัดข้อง", 
-            ai_message: "ขออภัยค่ะ ระบบค้นหาเกิดข้อผิดพลาดชั่วคราว", 
-            recommended_movie_ids: [] 
+        return res.status(500).json({
+            message: error.message,
+            ai_message:
+                'ขออภัยค่ะ ระบบค้นหาเกิดข้อผิดพลาดชั่วคราว',
+            recommended_movie_ids: [],
+            movies: [],
+            conversation_id: conversation_id || null
         });
     }
 });
