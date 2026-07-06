@@ -1,7 +1,5 @@
 const { Pool } = require('pg');
 
-// นำ Connection String ที่ได้จากหน้าเว็บ Supabase มาใส่แทนที่ตรงนี้
-// (ตรง [YOUR-PASSWORD] ให้เปลี่ยนเป็นรหัสผ่านฐานข้อมูลที่คุณตั้งไว้ตอนสร้างโปรเจกต์)
 const pool = new Pool({
   connectionString: 'postgresql://postgres.epaeevxsvmfoeqpufhvr:cinematch2310511101020@aws-1-ap-south-1.pooler.supabase.com:6543/postgres',
 });
