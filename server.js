@@ -498,9 +498,6 @@ app.post('/api/rooms/match/:pin', authenticateToken, async (req, res) => {
 // ==========================================
 // AI Search Engine Endpoint
 // ==========================================
-// ==========================================
-// AI Search Engine Endpoint
-// ==========================================
 app.post('/api/ai-search', authenticateToken, async (req, res) => {
     const userId = req.user.id;
     const { query, conversation_id } = req.body;
@@ -519,7 +516,7 @@ app.post('/api/ai-search', authenticateToken, async (req, res) => {
         console.error('DIFY_API_KEY is missing');
 
         return res.status(500).json({
-            message: 'Backend ไม่พบ DIFY_API_KEY',
+            message: 'ไม่พบ DIFY_API_KEY',
             ai_message: 'ระบบ CINE AI ยังไม่ได้ตั้งค่า API Key ค่ะ',
             recommended_movie_ids: [],
             movies: [],
@@ -530,11 +527,13 @@ app.post('/api/ai-search', authenticateToken, async (req, res) => {
     try {
         const payload = {
             inputs: {
-                // ต้องตรงกับตัวแปร {{user_id}} ใน Dify
                 user_id: String(userId)
             },
             query: query.trim(),
-            response_mode: 'blocking',
+
+            // Agent App ต้องใช้ streaming
+            response_mode: 'streaming',
+
             user: `cinematch_user_${userId}`
         };
 
@@ -554,17 +553,18 @@ app.post('/api/ai-search', authenticateToken, async (req, res) => {
             }
         );
 
-        const responseText = await difyResponse.text();
-
         if (!difyResponse.ok) {
+            const errorText = await difyResponse.text();
+
             console.error(
                 'Dify API Error:',
                 difyResponse.status,
-                responseText
+                errorText
             );
 
             return res.status(502).json({
                 message: `Dify API Error ${difyResponse.status}`,
+                detail: errorText,
                 ai_message:
                     'ขออภัยค่ะ ระบบ CINE AI เชื่อมต่อไม่สำเร็จ กรุณาลองใหม่อีกครั้ง',
                 recommended_movie_ids: [],
@@ -573,55 +573,99 @@ app.post('/api/ai-search', authenticateToken, async (req, res) => {
             });
         }
 
-        let difyData;
-
-        try {
-            difyData = JSON.parse(responseText);
-        } catch (parseError) {
-            console.error('Invalid Dify JSON:', responseText);
-
-            return res.status(502).json({
-                message: 'Dify ส่งข้อมูลกลับมาในรูปแบบไม่ถูกต้อง',
-                ai_message:
-                    'ขออภัยค่ะ ระบบได้รับข้อมูลผิดรูปแบบ กรุณาลองใหม่อีกครั้ง',
-                recommended_movie_ids: [],
-                movies: [],
-                conversation_id: conversation_id || null
-            });
+        if (!difyResponse.body) {
+            throw new Error('Dify ไม่ส่ง Response Body กลับมา');
         }
 
-        const rawAnswer = String(difyData.answer || '').trim();
-        const finalConversationId =
-            difyData.conversation_id ||
-            conversation_id ||
-            null;
+        const reader = difyResponse.body.getReader();
+        const decoder = new TextDecoder('utf-8');
+
+        let buffer = '';
+        let fullAnswer = '';
+        let finalConversationId = conversation_id || null;
+
+        const processEvent = (eventBlock) => {
+            const lines = eventBlock.split(/\r?\n/);
+
+            for (const line of lines) {
+                if (!line.startsWith('data:')) continue;
+
+                const rawData = line.slice(5).trim();
+
+                if (!rawData || rawData === '[DONE]') continue;
+
+                try {
+                    const data = JSON.parse(rawData);
+
+                    if (data.conversation_id) {
+                        finalConversationId = data.conversation_id;
+                    }
+
+                    if (
+                        data.event === 'message' ||
+                        data.event === 'agent_message'
+                    ) {
+                        fullAnswer += data.answer || '';
+                    }
+
+                    if (data.event === 'error') {
+                        console.error('Dify stream error:', data);
+                    }
+                } catch (error) {
+                    console.error(
+                        'Dify SSE parse error:',
+                        error.message,
+                        rawData
+                    );
+                }
+            }
+        };
+
+        while (true) {
+            const { done, value } = await reader.read();
+
+            if (done) break;
+
+            buffer += decoder.decode(value, {
+                stream: true
+            });
+
+            // SSE แต่ละ event คั่นด้วยบรรทัดว่าง
+            const eventBlocks = buffer.split(/\r?\n\r?\n/);
+
+            // เก็บก้อนสุดท้ายไว้ เพราะอาจยังรับมาไม่ครบ
+            buffer = eventBlocks.pop() || '';
+
+            eventBlocks.forEach(processEvent);
+        }
+
+        buffer += decoder.decode();
+
+        if (buffer.trim()) {
+            processEvent(buffer);
+        }
+
+        const rawAnswer = fullAnswer.trim();
 
         if (!rawAnswer) {
-            console.error('Dify returned empty answer:', difyData);
+            console.error('Dify returned empty answer');
 
             return res.status(502).json({
                 message: 'Dify ไม่ส่งข้อความตอบกลับ',
                 ai_message:
-                    'ขออภัยค่ะ CINE AI ยังไม่สามารถสร้างคำตอบได้ กรุณาลองพิมพ์ใหม่',
+                    'ขออภัยค่ะ CINE AI ยังไม่สามารถสร้างคำตอบได้ กรุณาลองใหม่อีกครั้ง',
                 recommended_movie_ids: [],
                 movies: [],
                 conversation_id: finalConversationId
             });
         }
 
-        // แยกข้อความสนทนาออกจาก JSON
-        const aiMessage = rawAnswer
-            .replace(/```json\s*[\s\S]*?\s*```/i, '')
-            .trim();
-
-        let movies = [];
-
-        // รูปแบบที่ Instructions กำหนด: ```json [...] ```
+        // แยก JSON ที่อยู่ใน ```json ... ```
         const fencedJsonMatch = rawAnswer.match(
             /```json\s*([\s\S]*?)\s*```/i
         );
 
-        // รองรับกรณี Dify ส่ง Array โดยไม่มี markdown
+        // รองรับ JSON Array ที่ไม่มี markdown
         const plainArrayMatch = rawAnswer.match(
             /(\[\s*\{[\s\S]*\}\s*\])/
         );
@@ -631,13 +675,15 @@ app.post('/api/ai-search', authenticateToken, async (req, res) => {
             plainArrayMatch?.[1] ||
             '';
 
+        let movies = [];
+
         if (jsonText) {
             try {
                 const parsedMovies = JSON.parse(jsonText);
 
                 if (Array.isArray(parsedMovies)) {
                     movies = parsedMovies
-                        .filter(movie => movie && movie.id)
+                        .filter(movie => movie?.id)
                         .slice(0, 3)
                         .map(movie => ({
                             id: Number(movie.id),
@@ -646,14 +692,19 @@ app.post('/api/ai-search', authenticateToken, async (req, res) => {
                             reason: movie.reason || ''
                         }));
                 }
-            } catch (jsonError) {
+            } catch (error) {
                 console.error(
                     'Movie JSON Parse Error:',
-                    jsonError,
+                    error.message,
                     jsonText
                 );
             }
         }
+
+        // ลบ JSON ออกจากข้อความสนทนา
+        const aiMessage = rawAnswer
+            .replace(/```json\s*[\s\S]*?\s*```/i, '')
+            .trim();
 
         return res.status(200).json({
             ai_message:
@@ -661,6 +712,7 @@ app.post('/api/ai-search', authenticateToken, async (req, res) => {
                 (movies.length > 0
                     ? 'นี่คือภาพยนตร์ที่เลือกมาแนะนำให้คุณค่ะ'
                     : rawAnswer),
+
             recommended_movie_ids: movies.map(movie => movie.id),
             movies,
             conversation_id: finalConversationId
