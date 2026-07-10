@@ -275,7 +275,8 @@ app.post('/api/recommendations', authenticateToken, async (req, res) => {
             "แอคชั่นบู้ล้างผลาญ": 28, "ผจญภัย": 12, "แอนิเมชัน": 16, "ตลกขบขัน": 35, "อาชญากรรม": 80,
             "สารคดี": 99, "ดราม่าเข้มข้น": 18, "ครอบครัว": 10751, "แฟนตาซีเวทมนตร์": 14, "ประวัติศาสตร์": 36,
             "สยองขวัญ": 27, "มิวสิคัล": 10402, "ลึกลับซ่อนเงื่อน": 9648, "โรแมนติก": 10749, "ไซไฟอวกาศ": 878,
-            "ทีวีมูฟวี่": 10770, "ระทึกขวัญตื่นเต้น": 53, "สงคราม": 10752, "คาวบอยตะวันตก": 37
+            "ทีวีมูฟวี่": 10770, "ระทึกขวัญตื่นเต้น": 53, "สงคราม": 10752, "คาวบอยตะวันตก": 37,
+            "แอคชั่น": 28, "ตลก": 35, "ดราม่า": 18, "แฟนตาซี": 14, "ลึกลับ": 9648, "ไซไฟ": 878, "ระทึกขวัญ": 53, "คาวบอย": 37
         };
 
         const topGenres = Object.entries(userWeights)
@@ -351,17 +352,17 @@ app.post('/api/recommendations', authenticateToken, async (req, res) => {
 });
 
 // ==========================================
-// 5. ระบบ Duo Match (สร้างห้องและจับคู่)
+// 5. ระบบ Duo Match (สร้างห้องและจัดการคิว)
 // ==========================================
 const activeRooms = {}; 
 
 app.post('/api/rooms/create', authenticateToken, (req, res) => {
-    const { hostName, genreWeights } = req.body;
+    const { hostName } = req.body;
     const pin = Math.floor(100000 + Math.random() * 900000).toString();
 
     activeRooms[pin] = {
         pin,
-        host: { name: hostName, weights: genreWeights || {} },
+        host: { name: hostName, id: req.user.id },
         guest: null,
         status: 'waiting',
         results: null
@@ -371,12 +372,12 @@ app.post('/api/rooms/create', authenticateToken, (req, res) => {
 });
 
 app.post('/api/rooms/join', authenticateToken, (req, res) => {
-    const { pin, guestName, genreWeights } = req.body;
+    const { pin, guestName } = req.body;
 
     if (!activeRooms[pin]) return res.status(404).json({ message: 'ไม่พบรหัสห้องนี้ หรือห้องหมดอายุแล้ว' });
     if (activeRooms[pin].guest) return res.status(400).json({ message: 'ห้องนี้เต็มแล้ว' });
 
-    activeRooms[pin].guest = { name: guestName, weights: genreWeights || {} };
+    activeRooms[pin].guest = { name: guestName, id: req.user.id };
     activeRooms[pin].status = 'ready'; 
 
     res.status(200).json({ message: 'เข้าร่วมห้องสำเร็จ', hostName: activeRooms[pin].host.name });
@@ -403,34 +404,36 @@ app.post('/api/rooms/match/:pin', authenticateToken, async (req, res) => {
     }
 
     try {
-        const hostWeights = room.host.weights || {};
-        const guestWeights = room.guest.weights || {};
+        // 🟢 เรียกใช้ PIVOT Table SQL จาก Supabase
+        const result = await pool.query(
+            `SELECT * FROM get_duo_match_genres($1, $2)`,
+            [room.host.id, room.guest.id]
+        );
 
-        const combinedWeights = {};
-        const allKeys = new Set([...Object.keys(hostWeights), ...Object.keys(guestWeights)]);
-        
-        allKeys.forEach(key => {
-            combinedWeights[key] = (hostWeights[key] || 0) + (guestWeights[key] || 0);
-        });
+        const topGenres = result.rows;
+
+        if (!topGenres || topGenres.length === 0) {
+            return res.status(404).json({ message: "ไม่พบความชอบที่ตรงกัน หรือคะแนนไม่ถึงเกณฑ์" });
+        }
 
         const REVERSE_GENRE_MAP = {
-            "แอคชั่นบู้ล้างผลาญ": 28, "ผจญภัย": 12, "แอนิเมชัน": 16, "ตลกขบขัน": 35, "อาชญากรรม": 80,
-            "สารคดี": 99, "ดราม่าเข้มข้น": 18, "ครอบครัว": 10751, "แฟนตาซีเวทมนตร์": 14, "ประวัติศาสตร์": 36,
-            "สยองขวัญ": 27, "มิวสิคัล": 10402, "ลึกลับซ่อนเงื่อน": 9648, "โรแมนติก": 10749, "ไซไฟอวกาศ": 878,
-            "ทีวีมูฟวี่": 10770, "ระทึกขวัญตื่นเต้น": 53, "สงคราม": 10752, "คาวบอยตะวันตก": 37
+            "แอคชั่น": 28, "ผจญภัย": 12, "แอนิเมชัน": 16, "ตลก": 35, "อาชญากรรม": 80,
+            "สารคดี": 99, "ดราม่า": 18, "ครอบครัว": 10751, "แฟนตาซี": 14, "ประวัติศาสตร์": 36,
+            "สยองขวัญ": 27, "มิวสิคัล": 10402, "ลึกลับ": 9648, "โรแมนติก": 10749, "ไซไฟ": 878,
+            "ทีวีมูฟวี่": 10770, "ระทึกขวัญ": 53, "สงคราม": 10752, "คาวบอย": 37,
+            "แอคชั่นบู้ล้างผลาญ": 28, "ตลกขบขัน": 35, "ดราม่าเข้มข้น": 18, "แฟนตาซีเวทมนตร์": 14,
+            "ลึกลับซ่อนเงื่อน": 9648, "ไซไฟอวกาศ": 878, "ระทึกขวัญตื่นเต้น": 53, "คาวบอยตะวันตก": 37
         };
 
-        const topGenres = Object.entries(combinedWeights)
-            .sort((a, b) => b[1] - a[1])
-            .slice(0, 3) 
-            .map(([name]) => REVERSE_GENRE_MAP[name])
+        const tmdbGenreIds = topGenres
+            .map(g => REVERSE_GENRE_MAP[g.genre])
             .filter(id => id);
 
-        const genreQuery = topGenres.length > 0 ? `&with_genres=${topGenres.join('|')}` : '';
-        const API_KEY = "181edc5801db6678de6ccb2864149a6a";
+        const genreQuery = tmdbGenreIds.length > 0 ? `&with_genres=${tmdbGenreIds.join('|')}` : '';
+        const API_KEY = process.env.TMDB_API_KEY || "181edc5801db6678de6ccb2864149a6a";
 
         const fetchPromises = [];
-        for (let page = 1; page <= 5; page++) {
+        for (let page = 1; page <= 3; page++) {
             fetchPromises.push(fetch(`https://api.themoviedb.org/3/discover/movie?api_key=${API_KEY}&language=th-TH&sort_by=popularity.desc${genreQuery}&page=${page}`));
             fetchPromises.push(fetch(`https://api.themoviedb.org/3/discover/tv?api_key=${API_KEY}&language=th-TH&sort_by=popularity.desc${genreQuery}&page=${page}`));
         }
@@ -440,58 +443,38 @@ app.post('/api/rooms/match/:pin', authenticateToken, async (req, res) => {
 
         let allItems = [];
         dataJsons.forEach((data, index) => {
-            const isTV = index % 2 !== 0; 
+            const isTV = index % 2 !== 0;
             const formatted = (data.results || []).map(item => ({
                 ...item,
-                title: isTV ? item.name : item.title, 
+                title: isTV ? item.name : item.title,
                 release_date: isTV ? item.first_air_date : item.release_date,
                 media_type: isTV ? 'tv' : 'movie'
             }));
             allItems = [...allItems, ...formatted];
         });
 
-        const scoredItems = allItems.map(item => {
-            let matchScore = 0; 
-            if (item.genre_ids) {
-                item.genre_ids.forEach(id => {
-                    const genreNameKey = Object.keys(REVERSE_GENRE_MAP).find(k => REVERSE_GENRE_MAP[k] === id);
-                    if (genreNameKey && combinedWeights[genreNameKey]) {
-                        matchScore += combinedWeights[genreNameKey];
-                    }
-                });
-            }
-            return { ...item, rawScore: matchScore };
-        });
-
-        scoredItems.sort((a, b) => b.rawScore - a.rawScore);
-
         const uniqueItems = [];
         const seenIds = new Set();
-        for (const item of scoredItems) {
-            if (!seenIds.has(item.id) && item.poster_path && item.backdrop_path && item.rawScore > 0) {
+        for (const item of allItems) {
+            if (!seenIds.has(item.id) && item.poster_path && item.backdrop_path) {
                 seenIds.add(item.id);
                 uniqueItems.push(item);
             }
         }
 
-        const topScore = uniqueItems[0]?.rawScore || 1; 
-        const finalResults = uniqueItems.map((item, index) => {
-            let percent = 98; 
-            if (index > 0) {
-                percent = Math.floor((item.rawScore * 98) / topScore);
-                if (percent >= 98) percent = 98 - index; 
-            }
-            return { ...item, matchPercent: percent };
+        // 🟢 เพิ่ม Match Percent และส่งกลับให้ Frontend
+        const finalResults = uniqueItems.slice(0, 10).map((item, index) => {
+            return { ...item, matchPercent: index === 0 ? 99 : (99 - index) };
         });
 
-        room.results = finalResults.slice(0, 10); 
+        room.results = finalResults;
         room.status = 'completed';
 
         res.status(200).json(room.results);
 
     } catch (err) {
-        console.error("Duo Match Error:", err);
-        res.status(500).json({ message: "เกิดข้อผิดพลาดในการประมวลผล" });
+        console.error("Duo Match Route Error:", err);
+        res.status(500).json({ error: "เกิดข้อผิดพลาดในการประมวลผลจับคู่" });
     }
 });
 
