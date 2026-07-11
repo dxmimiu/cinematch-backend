@@ -715,6 +715,44 @@ app.post('/api/ai-search', authenticateToken, async (req, res) => {
     }
 });
 
+// ==========================================
+// ค้นหาภาพยนตร์และซีรีส์จากชื่อเรื่อง (TMDB Search)
+// ==========================================
+app.get('/api/search', authenticateToken, async (req, res) => {
+    const { query, page = 1 } = req.query;
+    
+    if (!query) {
+        return res.status(400).json({ message: "กรุณาระบุคำค้นหา" });
+    }
+
+    try {
+        // ใช้ /search/multi เพื่อหาทั้งหนังและซีรีส์
+        const tmdbUrl = `https://api.themoviedb.org/3/search/multi?query=${encodeURIComponent(query)}&include_adult=false&language=th-TH&page=${page}`;
+        const options = {
+            method: 'GET',
+            headers: {
+                accept: 'application/json',
+                Authorization: `Bearer ${process.env.TMDB_BEARER_TOKEN}` // ใช้ Token เดิมของคุณ
+            }
+        };
+
+        const response = await fetch(tmdbUrl, options);
+        if (!response.ok) throw new Error("TMDB Search Failed");
+        
+        const data = await response.json();
+        
+        // กรองเอาเฉพาะ Movie และ TV (ตัดพวกข้อมูลดารา/นักแสดงออก)
+        const filteredResults = data.results.filter(
+            item => item.media_type === 'movie' || item.media_type === 'tv'
+        );
+
+        res.status(200).json({ ...data, results: filteredResults });
+    } catch (err) {
+        console.error("Search API Error:", err);
+        res.status(500).json({ message: 'เกิดข้อผิดพลาดในการค้นหาข้อมูล' });
+    }
+});
+
 const PORT = process.env.PORT || 10000; 
 app.listen(PORT, () => {
     console.log(`Backend server running on port ${PORT}`);
