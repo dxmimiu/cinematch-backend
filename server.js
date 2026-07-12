@@ -669,7 +669,10 @@ app.post('/api/ai-search', authenticateToken, async (req, res) => {
                         .filter(movie => movie?.id)
                         .slice(0, 3)
                         .map(movie => ({
-                            id: Number(movie.id),
+                            //id: Number(movie.id),
+                            //title: movie.title || '',
+                            id: String(movie.id), // เปลี่ยนจาก Number เป็น String เพื่อให้เก็บ "mv-123" ได้
+                            media_type: String(movie.id).startsWith('tv-') ? 'tv' : 'movie',
                             title: movie.title || '',
                             poster_path: movie.poster_path || null,
                             reason: movie.reason || ''
