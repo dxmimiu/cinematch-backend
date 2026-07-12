@@ -144,7 +144,8 @@ app.post('/api/likes', authenticateToken, async (req, res) => {
     const { movie_id, film_id, action, type, media_type, movie_title, film_title, genres, points, poster_path } = req.body;
     const userId = req.user.id;
     
-    const finalMovieId = String(movie_id || film_id); 
+    // ดักจับการส่งข้อมูลที่มีตัวอักษรปนมา ให้เหลือแค่ตัวเลขเพียวๆ
+    const finalMovieId = String(movie_id || film_id).replace(/^(mv-|tv-)/, ''); 
     const finalAction = action || type;
     const finalTitle = movie_title || film_title || null;
     const finalPoster = poster_path || null;
@@ -188,7 +189,7 @@ app.post('/api/likes/batch', authenticateToken, async (req, res) => {
         for (const item of skips) {
             const { movie_id, action, media_type, movie_title, poster_path, genres, points } = item;
             
-            const finalMovieId = String(movie_id);
+            const finalMovieId = String(movie_id).replace(/^(mv-|tv-)/, '');
             const finalGenres = typeof genres === 'object' ? JSON.stringify(genres) : (genres || null);
             const finalPoints = parseInt(points) || 0;
 
@@ -232,7 +233,7 @@ app.get('/api/likes', authenticateToken, async (req, res) => {
 
 app.delete('/api/likes/:movie_id', authenticateToken, async (req, res) => {
     const userId = req.user.id;
-    const movieId = String(req.params.movie_id);
+    const movieId = String(req.params.movie_id).replace(/^(mv-|tv-)/, '');
 
     try {
         await pool.query(
@@ -247,24 +248,109 @@ app.delete('/api/likes/:movie_id', authenticateToken, async (req, res) => {
 });
 
 // ==========================================
-// 4. ระบบ API แนะนำภาพยนตร์รายบุคคล
+// 4. ระบบ API แนะนำภาพยนตร์ (Bradley-Terry Model)
 // ==========================================
+
+// ✅ 4.1 API สำหรับบันทึกผลการโหวต This or That
+app.post('/api/this-that/vote', authenticateToken, async (req, res) => {
+    const { winner_movie_id, loser_movie_id, winner_genre, loser_genre } = req.body;
+    const userId = req.user.id;
+
+    if (!winner_genre || !loser_genre) {
+        return res.status(400).json({ message: "ข้อมูลหมวดหมู่ไม่ครบถ้วน" });
+    }
+
+    try {
+        await pool.query(
+            `INSERT INTO this_that_votes (user_id, winner_movie_id, loser_movie_id, winner_genre, loser_genre) 
+             VALUES ($1, $2, $3, $4, $5)`,
+            [userId, winner_movie_id, loser_movie_id, winner_genre, loser_genre]
+        );
+        res.status(200).json({ message: 'บันทึกผลโหวตสำเร็จ' });
+    } catch (err) {
+        console.error("Save This/That Vote Error:", err);
+        res.status(500).json({ message: 'เกิดข้อผิดพลาดในการบันทึกผลโหวต' });
+    }
+});
+
+// ✅ 4.2 API คำนวณความชอบและแนะนำภาพยนตร์ (Top 10)
 app.post('/api/recommendations', authenticateToken, async (req, res) => {
     try {
         const userId = req.user.id;
-        
-        const prefResult = await pool.query(
-            `SELECT pref_key, pref_value FROM user_preferences WHERE user_id = $1`,
+        let userWeights = {};
+
+        // 1. ดึงข้อมูลการโหวต This or That
+        const votesResult = await pool.query(
+            `SELECT winner_genre, loser_genre, COUNT(*) as wins 
+             FROM this_that_votes 
+             WHERE user_id = $1 
+             GROUP BY winner_genre, loser_genre`,
             [userId]
         );
 
-        let userWeights = {};
-        if (prefResult.rows.length > 0) {
-            prefResult.rows.forEach(row => {
-                userWeights[row.pref_key] = row.pref_value;
+        if (votesResult.rows.length > 0) {
+            // คำนวณ Bradley-Terry Model (Zermelo's Algorithm)
+            const wins = {}; 
+            const matches = {}; 
+            const genresSet = new Set();
+
+            votesResult.rows.forEach(row => {
+                const w = row.winner_genre;
+                const l = row.loser_genre;
+                const count = parseInt(row.wins, 10);
+
+                genresSet.add(w);
+                genresSet.add(l);
+
+                wins[w] = (wins[w] || 0) + count;
+                
+                if (!matches[w]) matches[w] = {};
+                if (!matches[l]) matches[l] = {};
+                
+                matches[w][l] = (matches[w][l] || 0) + count;
+                matches[l][w] = (matches[l][w] || 0) + count;
+            });
+
+            const genres = Array.from(genresSet);
+            let p = {}; 
+            genres.forEach(g => p[g] = 1.0); 
+
+            for (let iter = 0; iter < 10; iter++) {
+                const nextP = {};
+                let sumNextP = 0;
+
+                for (const i of genres) {
+                    let denom = 0;
+                    for (const j of genres) {
+                        if (i !== j && matches[i] && matches[i][j]) {
+                            denom += matches[i][j] / (p[i] + p[j]); 
+                        }
+                    }
+                    nextP[i] = denom > 0 ? (wins[i] || 0) / denom : 0;
+                    sumNextP += nextP[i];
+                }
+
+                for (const i of genres) {
+                    p[i] = sumNextP > 0 ? nextP[i] / sumNextP : 1.0 / genres.length;
+                }
+            }
+
+            genres.forEach(g => {
+                userWeights[g] = p[g] * 100;
             });
         } else {
-            userWeights = req.body.genreWeights || {};
+            // Fallback
+            const prefResult = await pool.query(
+                `SELECT pref_key, pref_value FROM user_preferences WHERE user_id = $1`,
+                [userId]
+            );
+            if (prefResult.rows.length > 0) {
+                prefResult.rows.forEach(row => {
+                    userWeights[row.pref_key] = row.pref_value;
+                });
+            } else {
+                userWeights = req.body.genreWeights || {};
+            }
         }
         
         if (Object.keys(userWeights).length === 0) {
@@ -319,7 +405,12 @@ app.post('/api/recommendations', authenticateToken, async (req, res) => {
                     }
                 });
             }
-            return { ...item, rawScore: matchScore };
+            
+            // 🚨 แก้ปัญหากินรวบ: หารคะแนนเฉลี่ยด้วยจำนวนป้ายแท็ก
+            const genreCount = item.genre_ids && item.genre_ids.length > 0 ? item.genre_ids.length : 1;
+            const finalRawScore = matchScore / genreCount;
+
+            return { ...item, rawScore: finalRawScore };
         });
 
         scoredItems.sort((a, b) => b.rawScore - a.rawScore);
@@ -404,7 +495,7 @@ app.post('/api/rooms/match/:pin', authenticateToken, async (req, res) => {
     }
 
     try {
-        // 🟢 เรียกใช้ PIVOT Table SQL จาก Supabase
+        // 🟢 เรียกใช้ PIVOT Table SQL จาก Supabase (Bayesian Average)
         const result = await pool.query(
             `SELECT * FROM get_duo_match_genres($1, $2)`,
             [room.host.id, room.guest.id]
@@ -462,7 +553,6 @@ app.post('/api/rooms/match/:pin', authenticateToken, async (req, res) => {
             }
         }
 
-        // 🟢 เพิ่ม Match Percent และส่งกลับให้ Frontend
         const finalResults = uniqueItems.slice(0, 10).map((item, index) => {
             return { ...item, matchPercent: index === 0 ? 99 : (99 - index) };
         });
@@ -479,7 +569,7 @@ app.post('/api/rooms/match/:pin', authenticateToken, async (req, res) => {
 });
 
 // ==========================================
-// AI Search Engine Endpoint
+// 6. AI Search Engine Endpoint
 // ==========================================
 app.post('/api/ai-search', authenticateToken, async (req, res) => {
     const userId = req.user.id;
@@ -497,7 +587,6 @@ app.post('/api/ai-search', authenticateToken, async (req, res) => {
 
     if (!process.env.DIFY_API_KEY) {
         console.error('DIFY_API_KEY is missing');
-
         return res.status(500).json({
             message: 'ไม่พบ DIFY_API_KEY',
             ai_message: 'ระบบ CINE AI ยังไม่ได้ตั้งค่า API Key ค่ะ',
@@ -513,10 +602,7 @@ app.post('/api/ai-search', authenticateToken, async (req, res) => {
                 user_id: String(userId)
             },
             query: query.trim(),
-
-            // Agent App ต้องใช้ streaming
             response_mode: 'streaming',
-
             user: `cinematch_user_${userId}`
         };
 
@@ -538,18 +624,11 @@ app.post('/api/ai-search', authenticateToken, async (req, res) => {
 
         if (!difyResponse.ok) {
             const errorText = await difyResponse.text();
-
-            console.error(
-                'Dify API Error:',
-                difyResponse.status,
-                errorText
-            );
-
+            console.error('Dify API Error:', difyResponse.status, errorText);
             return res.status(502).json({
                 message: `Dify API Error ${difyResponse.status}`,
                 detail: errorText,
-                ai_message:
-                    'ขออภัยค่ะ ระบบ CINE AI เชื่อมต่อไม่สำเร็จ กรุณาลองใหม่อีกครั้ง',
+                ai_message: 'ขออภัยค่ะ ระบบ CINE AI เชื่อมต่อไม่สำเร็จ กรุณาลองใหม่อีกครั้ง',
                 recommended_movie_ids: [],
                 movies: [],
                 conversation_id: conversation_id || null
@@ -569,61 +648,38 @@ app.post('/api/ai-search', authenticateToken, async (req, res) => {
 
         const processEvent = (eventBlock) => {
             const lines = eventBlock.split(/\r?\n/);
-
             for (const line of lines) {
                 if (!line.startsWith('data:')) continue;
-
                 const rawData = line.slice(5).trim();
-
                 if (!rawData || rawData === '[DONE]') continue;
 
                 try {
                     const data = JSON.parse(rawData);
-
                     if (data.conversation_id) {
                         finalConversationId = data.conversation_id;
                     }
-
-                    if (
-                        data.event === 'message' ||
-                        data.event === 'agent_message'
-                    ) {
+                    if (data.event === 'message' || data.event === 'agent_message') {
                         fullAnswer += data.answer || '';
                     }
-
                     if (data.event === 'error') {
                         console.error('Dify stream error:', data);
                     }
                 } catch (error) {
-                    console.error(
-                        'Dify SSE parse error:',
-                        error.message,
-                        rawData
-                    );
+                    console.error('Dify SSE parse error:', error.message, rawData);
                 }
             }
         };
 
         while (true) {
             const { done, value } = await reader.read();
-
             if (done) break;
-
-            buffer += decoder.decode(value, {
-                stream: true
-            });
-
-            // SSE แต่ละ event คั่นด้วยบรรทัดว่าง
+            buffer += decoder.decode(value, { stream: true });
             const eventBlocks = buffer.split(/\r?\n\r?\n/);
-
-            // เก็บก้อนสุดท้ายไว้ เพราะอาจยังรับมาไม่ครบ
             buffer = eventBlocks.pop() || '';
-
             eventBlocks.forEach(processEvent);
         }
 
         buffer += decoder.decode();
-
         if (buffer.trim()) {
             processEvent(buffer);
         }
@@ -632,11 +688,9 @@ app.post('/api/ai-search', authenticateToken, async (req, res) => {
 
         if (!rawAnswer) {
             console.error('Dify returned empty answer');
-
             return res.status(502).json({
                 message: 'Dify ไม่ส่งข้อความตอบกลับ',
-                ai_message:
-                    'ขออภัยค่ะ CINE AI ยังไม่สามารถสร้างคำตอบได้ กรุณาลองใหม่อีกครั้ง',
+                ai_message: 'ขออภัยค่ะ CINE AI ยังไม่สามารถสร้างคำตอบได้ กรุณาลองใหม่อีกครั้ง',
                 recommended_movie_ids: [],
                 movies: [],
                 conversation_id: finalConversationId
@@ -644,34 +698,22 @@ app.post('/api/ai-search', authenticateToken, async (req, res) => {
         }
 
         // แยก JSON ที่อยู่ใน ```json ... ```
-        const fencedJsonMatch = rawAnswer.match(
-            /```json\s*([\s\S]*?)\s*```/i
-        );
-
-        // รองรับ JSON Array ที่ไม่มี markdown
-        const plainArrayMatch = rawAnswer.match(
-            /(\[\s*\{[\s\S]*\}\s*\])/
-        );
-
-        const jsonText =
-            fencedJsonMatch?.[1] ||
-            plainArrayMatch?.[1] ||
-            '';
+        const fencedJsonMatch = rawAnswer.match(/```json\s*([\s\S]*?)\s*```/i);
+        const plainArrayMatch = rawAnswer.match(/(\[\s*\{[\s\S]*\}\s*\])/);
+        const jsonText = fencedJsonMatch?.[1] || plainArrayMatch?.[1] || '';
 
         let movies = [];
 
         if (jsonText) {
             try {
                 const parsedMovies = JSON.parse(jsonText);
-
                 if (Array.isArray(parsedMovies)) {
                     movies = parsedMovies
                         .filter(movie => movie?.id)
                         .slice(0, 3)
                         .map(movie => ({
-                            //id: Number(movie.id),
-                            //title: movie.title || '',
-                            id: String(movie.id), // เปลี่ยนจาก Number เป็น String เพื่อให้เก็บ "mv-123" ได้
+                            // แปลง ID เป็น String เพื่อรองรับรูปแบบ mv-123 หรือ tv-123
+                            id: String(movie.id), 
                             media_type: String(movie.id).startsWith('tv-') ? 'tv' : 'movie',
                             title: movie.title || '',
                             poster_path: movie.poster_path || null,
@@ -679,26 +721,14 @@ app.post('/api/ai-search', authenticateToken, async (req, res) => {
                         }));
                 }
             } catch (error) {
-                console.error(
-                    'Movie JSON Parse Error:',
-                    error.message,
-                    jsonText
-                );
+                console.error('Movie JSON Parse Error:', error.message, jsonText);
             }
         }
 
-        // ลบ JSON ออกจากข้อความสนทนา
-        const aiMessage = rawAnswer
-            .replace(/```json\s*[\s\S]*?\s*```/i, '')
-            .trim();
+        const aiMessage = rawAnswer.replace(/```json\s*[\s\S]*?\s*```/i, '').trim();
 
         return res.status(200).json({
-            ai_message:
-                aiMessage ||
-                (movies.length > 0
-                    ? 'นี่คือภาพยนตร์ที่เลือกมาแนะนำให้คุณค่ะ'
-                    : rawAnswer),
-
+            ai_message: aiMessage || (movies.length > 0 ? 'นี่คือภาพยนตร์ที่เลือกมาแนะนำให้คุณค่ะ' : rawAnswer),
             recommended_movie_ids: movies.map(movie => movie.id),
             movies,
             conversation_id: finalConversationId
@@ -706,11 +736,9 @@ app.post('/api/ai-search', authenticateToken, async (req, res) => {
 
     } catch (error) {
         console.error('AI Search Error:', error);
-
         return res.status(500).json({
             message: error.message,
-            ai_message:
-                'ขออภัยค่ะ ระบบค้นหาเกิดข้อผิดพลาดชั่วคราว',
+            ai_message: 'ขออภัยค่ะ ระบบค้นหาเกิดข้อผิดพลาดชั่วคราว',
             recommended_movie_ids: [],
             movies: [],
             conversation_id: conversation_id || null
@@ -729,13 +757,12 @@ app.get('/api/search', authenticateToken, async (req, res) => {
     }
 
     try {
-        // ใช้ /search/multi เพื่อหาทั้งหนังและซีรีส์
         const tmdbUrl = `https://api.themoviedb.org/3/search/multi?query=${encodeURIComponent(query)}&include_adult=false&language=th-TH&page=${page}`;
         const options = {
             method: 'GET',
             headers: {
                 accept: 'application/json',
-                Authorization: `Bearer ${process.env.TMDB_BEARER_TOKEN}` // ใช้ Token เดิมของคุณ
+                Authorization: `Bearer ${process.env.TMDB_BEARER_TOKEN}` 
             }
         };
 
@@ -743,8 +770,6 @@ app.get('/api/search', authenticateToken, async (req, res) => {
         if (!response.ok) throw new Error("TMDB Search Failed");
         
         const data = await response.json();
-        
-        // กรองเอาเฉพาะ Movie และ TV (ตัดพวกข้อมูลดารา/นักแสดงออก)
         const filteredResults = data.results.filter(
             item => item.media_type === 'movie' || item.media_type === 'tv'
         );
