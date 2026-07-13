@@ -251,7 +251,7 @@ app.delete('/api/likes/:movie_id', authenticateToken, async (req, res) => {
 // 4. ระบบ API แนะนำภาพยนตร์ (Bradley-Terry Model)
 // ==========================================
 
-// ✅ 4.1 API สำหรับบันทึกผลการโหวต This or That
+// ✅ 4.1 API สำหรับบันทึกผลการโหวต This or That (อัปเดตกันคะแนนเฟ้อ)
 app.post('/api/this-that/vote', authenticateToken, async (req, res) => {
     const { winner_movie_id, loser_movie_id, winner_genre, loser_genre } = req.body;
     const userId = req.user.id;
@@ -261,12 +261,32 @@ app.post('/api/this-that/vote', authenticateToken, async (req, res) => {
     }
 
     try {
-        await pool.query(
-            `INSERT INTO this_that_votes (user_id, winner_movie_id, loser_movie_id, winner_genre, loser_genre) 
-             VALUES ($1, $2, $3, $4, $5)`,
-            [userId, winner_movie_id, loser_movie_id, winner_genre, loser_genre]
+        // 🟢 เช็คก่อนว่าผู้ใช้คนนี้ เคยโหวตหนัง "คู่นี้" ไปแล้วหรือยัง (สลับตำแหน่งผู้ชนะ/แพ้ ก็ถือว่าเป็นคู่เดียวกัน)
+        const checkExisting = await pool.query(
+            `SELECT id FROM this_that_votes 
+             WHERE user_id = $1 
+             AND ((winner_movie_id = $2 AND loser_movie_id = $3) OR (winner_movie_id = $3 AND loser_movie_id = $2))`,
+            [userId, winner_movie_id, loser_movie_id]
         );
-        res.status(200).json({ message: 'บันทึกผลโหวตสำเร็จ' });
+
+        if (checkExisting.rows.length > 0) {
+            // ถ้าเคยโหวตคู่นี้แล้ว ให้อัปเดตข้อมูลเดิม (เปลี่ยนใจ) แทนที่จะบวกคะแนนซ้ำซ้อน
+            await pool.query(
+                `UPDATE this_that_votes 
+                 SET winner_movie_id = $1, loser_movie_id = $2, winner_genre = $3, loser_genre = $4 
+                 WHERE id = $5`,
+                [winner_movie_id, loser_movie_id, winner_genre, loser_genre, checkExisting.rows[0].id]
+            );
+            return res.status(200).json({ message: 'อัปเดตผลโหวตเดิมสำเร็จ' });
+        } else {
+            // ถ้ายังไม่เคยโหวตคู่นี้ ค่อยบันทึกแถวใหม่
+            await pool.query(
+                `INSERT INTO this_that_votes (user_id, winner_movie_id, loser_movie_id, winner_genre, loser_genre) 
+                 VALUES ($1, $2, $3, $4, $5)`,
+                [userId, winner_movie_id, loser_movie_id, winner_genre, loser_genre]
+            );
+            return res.status(200).json({ message: 'บันทึกผลโหวตสำเร็จ' });
+        }
     } catch (err) {
         console.error("Save This/That Vote Error:", err);
         res.status(500).json({ message: 'เกิดข้อผิดพลาดในการบันทึกผลโหวต' });
