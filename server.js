@@ -279,7 +279,20 @@ app.post('/api/recommendations', authenticateToken, async (req, res) => {
         const userId = req.user.id;
         let userWeights = {};
 
-        // 1. ดึงข้อมูลการโหวต This or That
+        // 1. ดึงข้อมูล user_preferences ออกมาเป็น "ฐานคะแนน" ก่อนเสมอ
+        const prefResult = await pool.query(
+            `SELECT pref_key, pref_value FROM user_preferences WHERE user_id = $1`,
+            [userId]
+        );
+        if (prefResult.rows.length > 0) {
+            prefResult.rows.forEach(row => {
+                userWeights[row.pref_key] = row.pref_value;
+            });
+        } else if (req.body.genreWeights) {
+            userWeights = { ...req.body.genreWeights };
+        }
+
+        // 2. ดึงข้อมูล Bradley-Terry จากการโหวต This/That มาเป็น "คะแนนโบนัส"
         const votesResult = await pool.query(
             `SELECT winner_genre, loser_genre, COUNT(*) as wins 
              FROM this_that_votes 
@@ -303,10 +316,8 @@ app.post('/api/recommendations', authenticateToken, async (req, res) => {
                 genresSet.add(l);
 
                 wins[w] = (wins[w] || 0) + count;
-                
                 if (!matches[w]) matches[w] = {};
                 if (!matches[l]) matches[l] = {};
-                
                 matches[w][l] = (matches[w][l] || 0) + count;
                 matches[l][w] = (matches[l][w] || 0) + count;
             });
@@ -318,7 +329,6 @@ app.post('/api/recommendations', authenticateToken, async (req, res) => {
             for (let iter = 0; iter < 10; iter++) {
                 const nextP = {};
                 let sumNextP = 0;
-
                 for (const i of genres) {
                     let denom = 0;
                     for (const j of genres) {
@@ -329,28 +339,16 @@ app.post('/api/recommendations', authenticateToken, async (req, res) => {
                     nextP[i] = denom > 0 ? (wins[i] || 0) / denom : 0;
                     sumNextP += nextP[i];
                 }
-
                 for (const i of genres) {
                     p[i] = sumNextP > 0 ? nextP[i] / sumNextP : 1.0 / genres.length;
                 }
             }
 
+            // 🟢 ผสานคะแนน: เอา Preference ของ Zermelo มาคูณโบนัส (เช่น 50 แต้ม) แล้วบวกทบเข้าไปในฐานคะแนนเดิม
             genres.forEach(g => {
-                userWeights[g] = p[g] * 100;
+                const btBonus = p[g] * 50; 
+                userWeights[g] = (userWeights[g] || 0) + btBonus;
             });
-        } else {
-            // Fallback
-            const prefResult = await pool.query(
-                `SELECT pref_key, pref_value FROM user_preferences WHERE user_id = $1`,
-                [userId]
-            );
-            if (prefResult.rows.length > 0) {
-                prefResult.rows.forEach(row => {
-                    userWeights[row.pref_key] = row.pref_value;
-                });
-            } else {
-                userWeights = req.body.genreWeights || {};
-            }
         }
         
         if (Object.keys(userWeights).length === 0) {
@@ -372,7 +370,7 @@ app.post('/api/recommendations', authenticateToken, async (req, res) => {
             .filter(id => id);
 
         const genreQuery = topGenres.length > 0 ? `&with_genres=${topGenres.join('|')}` : '';
-        const API_KEY = "181edc5801db6678de6ccb2864149a6a";
+        const API_KEY = process.env.TMDB_API_KEY || "181edc5801db6678de6ccb2864149a6a";
 
         const fetchPromises = [];
         for (let page = 1; page <= 3; page++) {
@@ -406,11 +404,9 @@ app.post('/api/recommendations', authenticateToken, async (req, res) => {
                 });
             }
             
-            // 🚨 แก้ปัญหากินรวบ: หารคะแนนเฉลี่ยด้วยจำนวนป้ายแท็ก
-            const genreCount = item.genre_ids && item.genre_ids.length > 0 ? item.genre_ids.length : 1;
-            const finalRawScore = matchScore / genreCount;
-
-            return { ...item, rawScore: finalRawScore };
+            // 🟢 ยกเลิกการหารด้วย genreCount เพื่อไม่ให้หนัง ผจญภัย/ครอบครัว/ตลก โดนกดคะแนน 
+            // เปลี่ยนมาใช้ matchScore ตรงๆ ยิ่งหนังมีแท็กตรงกับที่ชอบเยอะ ยิ่งได้ขึ้นอันดับแรกๆ
+            return { ...item, rawScore: matchScore };
         });
 
         scoredItems.sort((a, b) => b.rawScore - a.rawScore);
