@@ -366,7 +366,7 @@ app.post('/api/recommendations', authenticateToken, async (req, res) => {
 
             // 🟢 ผสานคะแนน: เอา Preference ของ Zermelo มาคูณโบนัส (เช่น 50 แต้ม) แล้วบวกทบเข้าไปในฐานคะแนนเดิม
             genres.forEach(g => {
-                const btBonus = p[g] * 50; 
+                const btBonus = p[g] * 15; 
                 userWeights[g] = (userWeights[g] || 0) + btBonus;
             });
         }
