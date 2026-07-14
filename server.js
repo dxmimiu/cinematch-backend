@@ -725,16 +725,28 @@ app.post('/api/ai-search', authenticateToken, async (req, res) => {
                 const parsedMovies = JSON.parse(jsonText);
                 if (Array.isArray(parsedMovies)) {
                     movies = parsedMovies
-                        .filter(movie => movie?.id)
+                        .filter(movie => movie?.id && (movie?.title_en || movie?.title))
                         .slice(0, 3)
-                        .map(movie => ({
-                            // แปลง ID เป็น String เพื่อรองรับรูปแบบ mv-123 หรือ tv-123
-                            id: String(movie.id), 
-                            media_type: String(movie.id).startsWith('tv-') ? 'tv' : 'movie',
-                            title: movie.title || '',
-                            poster_path: movie.poster_path || null,
-                            reason: movie.reason || ''
-                        }));
+                        .map(movie => {
+                            const id = String(movie.id);
+
+                            const mediaType =
+                                movie.type === 'tv' || id.startsWith('tv-')
+                                    ? 'tv'
+                                    : 'movie';
+
+                            const titleEn = movie.title_en || movie.title || '';
+
+                            return {
+                                id,
+                                type: mediaType,
+                                media_type: mediaType,
+                                title_en: titleEn,
+                                title: titleEn,
+                                poster_path: movie.poster_path || null,
+                                reason: movie.reason || ''
+                };
+            });
                 }
             } catch (error) {
                 console.error('Movie JSON Parse Error:', error.message, jsonText);
