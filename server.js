@@ -719,28 +719,51 @@ app.post('/api/ai-search', authenticateToken, async (req, res) => {
         const jsonText = fencedJsonMatch?.[1] || plainArrayMatch?.[1] || '';
  
         let movies = [];
- 
+
         if (jsonText) {
             try {
                 const parsedMovies = JSON.parse(jsonText);
                 if (Array.isArray(parsedMovies)) {
                     movies = parsedMovies
-                        .filter(movie => movie?.id)
+                        // ใช้ชื่อเรื่องเป็นข้อมูลหลัก เพราะ AI อาจเดา TMDB ID ผิด
+                        .filter(movie => movie?.title_en || movie?.title)
                         .slice(0, 3)
-                        .map(movie => ({
-                            // แปลง ID เป็น String เพื่อรองรับรูปแบบ mv-123 หรือ tv-123
-                            id: String(movie.id),
-                            media_type: String(movie.id).startsWith('tv-') ? 'tv' : 'movie',
-                            title: movie.title || '',
-                            poster_path: movie.poster_path || null,
-                            reason: movie.reason || ''
-                        }));
+                        .map(movie => {
+                            const suppliedId = String(movie.id || '');
+                            const mediaType =
+                                movie.type === 'tv' ||
+                                movie.media_type === 'tv' ||
+                                suppliedId.startsWith('tv-')
+                                    ? 'tv'
+                                    : movie.type === 'movie' ||
+                                      movie.media_type === 'movie' ||
+                                      suppliedId.startsWith('mv-')
+                                        ? 'movie'
+                                        : 'multi';
+
+                            const titleEn = String(
+                                movie.title_en || movie.title || ''
+                            ).trim();
+
+                            return {
+                                // ID เป็นเพียงข้อมูลประกอบ Frontend จะยืนยันกับ TMDB จากชื่อและปีอีกครั้ง
+                                id: suppliedId,
+                                type: mediaType,
+                                media_type: mediaType,
+                                title_en: titleEn,
+                                title: titleEn,
+                                year: String(
+                                    movie.year || movie.release_year || ''
+                                ).trim(),
+                                reason: movie.reason || ''
+                            };
+                        });
                 }
             } catch (error) {
                 console.error('Movie JSON Parse Error:', error.message, jsonText);
             }
         }
- 
+
         const aiMessage = rawAnswer.replace(/```json\s*[\s\S]*?\s*```/i, '').trim();
  
         return res.status(200).json({
