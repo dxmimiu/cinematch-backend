@@ -16,15 +16,12 @@ app.use(express.json());
 
 // ฟังก์ชันตรวจสอบความถูกต้องของ JWT Token (Middleware)
 const verifyToken = (req, res, next) => {
-  const authHeader = req.headers['authorization'];
-  // หากไม่มีการแนบ Header Authorization มาด้วย จะทำการปฏิเสธการเข้าถึง
+  const authHeader = req.headers['authorization']; // ถ้าไม่มีการแนบ Header Authorization มา จะทำการปฏิเสธการเข้าถึง
   if (!authHeader) return res.status(403).json({ message: 'ไม่มี Token อนุญาตให้เข้าถึง' });
 
-  // แยกเอาเฉพาะตัว Token ออกมาจากคำว่า Bearer
   const token = authHeader.split(' ')[1]; 
   // ตรวจสอบความถูกต้องของ Token ด้วยคีย์ลับ
   jwt.verify(token, SECRET_KEY, (err, decoded) => {
-    // หาก Token ไม่ถูกต้องหรือหมดอายุ จะส่งสถานะ 401 กลับไป
     if (err) return res.status(401).json({ message: 'Token ไม่ถูกต้องหรือหมดอายุแล้ว' });
     // บันทึกข้อมูลที่ถอดรหัสได้ลงใน req.user เพื่อให้ระบบส่วนอื่นนำไปใช้งานต่อ
     req.user = decoded;
@@ -32,9 +29,9 @@ const verifyToken = (req, res, next) => {
   });
 };
 
-// --- ระบบยืนยันตัวตนและบัญชีผู้ใช้ (Auth Routes) ---
+// ระบบยืนยันตัวตนและบัญชีผู้ใช้ (Auth Routes)
 
-// พาทสำหรับการลงทะเบียนผู้ใช้ใหม่
+// การลงทะเบียนผู้ใช้ใหม่
 app.post('/api/register', async (req, res) => {
   const { name, email, password } = req.body;
   if (!name || !email || !password) return res.status(400).json({ message: 'กรุณากรอกข้อมูลให้ครบถ้วน' });
@@ -44,8 +41,6 @@ app.post('/api/register', async (req, res) => {
     const salt = await bcrypt.genSalt(10);
     const passwordHash = await bcrypt.hash(password, salt);
     
-    // 🟢 เปลี่ยนมาใช้ pool.query สำหรับ PostgreSQL
-    // 🟢 เปลี่ยนเครื่องหมาย ? เป็น $1, $2, $3
     await pool.query(
       `INSERT INTO users (name, email, password_hash) VALUES ($1, $2, $3)`, 
       [name, email, passwordHash]
@@ -54,19 +49,17 @@ app.post('/api/register', async (req, res) => {
     res.status(201).json({ message: 'สมัครสมาชิกเรียบร้อย' });
     
   } catch (error) {
-    // ใน PostgreSQL ถ้าเกิด Error ซ้ำ (เช่น อีเมลซ้ำตามเงื่อนไข UNIQUE) 
-    // จะโยนเข้ามาใน catch block นี้ครับ
+    // ใน PostgreSQL ถ้าเกิด Error ซ้ำ (เช่น อีเมลซ้ำตามเงื่อนไข UNIQUE) จะโยนเข้ามาใน catch block นี้
     console.error('Register Error:', error);
     res.status(400).json({ message: 'อีเมลนี้มีในระบบแล้ว หรือเกิดข้อผิดพลาด' });
   }
 });
 
-// พาทสำหรับเข้าสู่ระบบ
+// การเข้าสู่ระบบ
 app.post('/api/login', async (req, res) => {
   const { email, password } = req.body;
   
   try {
-    // 🟢 เปลี่ยนมาใช้ pool.query และเปลี่ยนเครื่องหมาย ? เป็น $1
     const result = await pool.query(`SELECT * FROM users WHERE email = $1`, [email]);
     const user = result.rows[0]; // ดึงข้อมูลผู้ใช้แถวแรก
 
@@ -86,10 +79,9 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// พาทสำหรับตรวจสอบสถานะผู้ใช้งานปัจจุบันผ่าน Token
+// การตรวจสอบสถานะผู้ใช้งานปัจจุบันผ่าน Token
 app.get('/api/verify', verifyToken, async (req, res) => {
   try {
-    // 🟢 เปลี่ยนมาใช้ pool.query และเปลี่ยน ? เป็น $1
     const result = await pool.query(
       `SELECT id, name, has_completed_quiz FROM users WHERE id = $1`, 
       [req.user.id]
@@ -104,12 +96,11 @@ app.get('/api/verify', verifyToken, async (req, res) => {
   }
 });
 
-// --- ระบบบันทึกและคำนวณความพึงพอใจ (Preference & Quiz Routes) ---
+// ระบบบันทึกและคำนวณความพึงพอใจ (Preference & Quiz Routes)
 
 // อัปเดตสถานะการทำแบบทดสอบแรกเริ่มของผู้ใช้ว่าเสร็จสิ้นแล้ว
 app.post('/api/users/complete-quiz', verifyToken, async (req, res) => {
   try {
-    // 🟢 เปลี่ยนมาใช้ pool.query สำหรับ PostgreSQL และเปลี่ยน ? เป็น $1
     await pool.query(
       `UPDATE users SET has_completed_quiz = 1 WHERE id = $1`, 
       [req.user.id]
@@ -128,8 +119,6 @@ app.post('/api/update-preference', verifyToken, async (req, res) => {
   const { key, score } = req.body;
   
   try {
-    // 🟢 เปลี่ยนมาใช้ pool.query สำหรับ PostgreSQL 
-    // 🟢 เปลี่ยนเครื่องหมาย ? ทั้ง 4 ตัว เป็น $1, $2, $3, $4 ตามลำดับ
     await pool.query(
       `INSERT INTO user_preferences (user_id, pref_key, pref_value) 
        VALUES ($1, $2, $3) 
@@ -146,15 +135,15 @@ app.post('/api/update-preference', verifyToken, async (req, res) => {
   }
 });
 
-// --- ระบบจัดการรายการที่ชอบและไม่ชอบ (Likes Management) ---
+// ระบบจัดการรายการที่ชอบและไม่ชอบ
 
-// พาทสำหรับบันทึกภาพยนตร์ที่ผู้ใช้กดถูกใจ (Like) หรือไม่ถูกใจ (Dislike)
+// การบันทึกภาพยนตร์ที่ผู้ใช้กด Like หรือ Dislike
 app.post('/api/likes', verifyToken, async (req, res) => {
   const { film_id, film_title, type } = req.body;
   const userId = req.user.id;
 
   try {
-    // 🟢 สเตปที่ 1: ตรวจสอบว่าเคยมีการบันทึกภาพยนตร์เรื่องนี้ไปแล้วหรือไม่
+    //  สเตปที่ 1: ตรวจสอบว่าเคยมีการบันทึกภาพยนตร์เรื่องนี้ไปแล้วหรือไม่
     const checkResult = await pool.query(
       `SELECT id FROM user_likes WHERE user_id = $1 AND film_id = $2`, 
       [userId, film_id]
@@ -162,14 +151,14 @@ app.post('/api/likes', verifyToken, async (req, res) => {
     
     const row = checkResult.rows[0];
 
-    // 🟢 สเตปที่ 2: ถ้ามีข้อมูลอยู่แล้วให้ทำการอัปเดตสถานะ
+    //  สเตปที่ 2: ถ้ามีข้อมูลอยู่แล้วให้ทำการอัปเดตสถานะ
     if (row) {
       await pool.query(
         `UPDATE user_likes SET type = $1 WHERE id = $2`, 
         [type, row.id]
       );
     } 
-    // 🟢 สเตปที่ 3: ถ้ายังไม่มีข้อมูลให้ทำการบันทึกข้อมูลใหม่
+    //  สเตปที่ 3: ถ้ายังไม่มีข้อมูลให้ทำการบันทึกข้อมูลใหม่
     else {
       await pool.query(
         `INSERT INTO user_likes (user_id, film_id, film_title, type) VALUES ($1, $2, $3, $4)`, 
@@ -188,7 +177,7 @@ app.post('/api/likes', verifyToken, async (req, res) => {
 // พาทสำหรับดึงรายการภาพยนตร์ที่ชอบและไม่ชอบทั้งหมดของผู้ใช้ออกมาแสดงผล
 app.get('/api/likes', verifyToken, async (req, res) => {
   try {
-    // 🟢 เปลี่ยนมาใช้ pool.query สำหรับ PostgreSQL และเปลี่ยน ? เป็น $1
+    //  เปลี่ยนมาใช้ pool.query สำหรับ PostgreSQL และเปลี่ยน ? เป็น $1
     const result = await pool.query(
       `SELECT film_id, film_title, type FROM user_likes WHERE user_id = $1`, 
       [req.user.id]
@@ -214,7 +203,7 @@ app.delete('/api/likes/:film_id', verifyToken, async (req, res) => {
   const filmId = req.params.film_id;
 
   try {
-    // 🟢 เปลี่ยนมาใช้ pool.query สำหรับ PostgreSQL และเปลี่ยน ? เป็น $1, $2
+    //  เปลี่ยนมาใช้ pool.query สำหรับ PostgreSQL และเปลี่ยน ? เป็น $1, $2
     await pool.query(
       `DELETE FROM user_likes WHERE user_id = $1 AND film_id = $2`, 
       [userId, filmId]
@@ -235,7 +224,7 @@ app.post('/api/create-room', verifyToken, async (req, res) => {
   const pin = Math.floor(1000 + Math.random() * 9000).toString();
   
   try {
-    // 🟢 เปลี่ยนมาใช้ pool.query สำหรับ PostgreSQL และเปลี่ยน ? เป็น $1, $2
+    //  เปลี่ยนมาใช้ pool.query สำหรับ PostgreSQL และเปลี่ยน ? เป็น $1, $2
     await pool.query(
       `INSERT INTO rooms (pin, host_id, status) VALUES ($1, $2, 'waiting')`, 
       [pin, req.user.id]
@@ -254,7 +243,7 @@ app.get('/api/room-status/:pin', verifyToken, async (req, res) => {
   const pin = req.params.pin;
 
   try {
-    // 🟢 เปลี่ยนมาใช้ pool.query สำหรับ PostgreSQL และเปลี่ยน ? เป็น $1
+    //  เปลี่ยนมาใช้ pool.query สำหรับ PostgreSQL และเปลี่ยน ? เป็น $1
     const result = await pool.query(
       `SELECT r.status, u.name as host FROM rooms r JOIN users u ON r.host_id = u.id WHERE r.pin = $1`, 
       [pin]
@@ -278,7 +267,7 @@ app.post('/api/start-room', verifyToken, async (req, res) => {
   const { pin } = req.body;
 
   try {
-    // 🟢 เปลี่ยนมาใช้ pool.query สำหรับ PostgreSQL และเปลี่ยน ? เป็น $1
+    //  เปลี่ยนมาใช้ pool.query สำหรับ PostgreSQL และเปลี่ยน ? เป็น $1
     await pool.query(
       `UPDATE rooms SET status = 'started' WHERE pin = $1`, 
       [pin]
@@ -297,7 +286,7 @@ app.delete('/api/leave-room/:pin', verifyToken, async (req, res) => {
   const pin = req.params.pin;
 
   try {
-    // 🟢 เปลี่ยนมาใช้ pool.query สำหรับ PostgreSQL และเปลี่ยน ? เป็น $1
+    //  เปลี่ยนมาใช้ pool.query สำหรับ PostgreSQL และเปลี่ยน ? เป็น $1
     await pool.query(
       `DELETE FROM rooms WHERE pin = $1`, 
       [pin]

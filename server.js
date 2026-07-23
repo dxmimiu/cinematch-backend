@@ -9,9 +9,7 @@ app.use(express.json());
  
 const SECRET_KEY = process.env.JWT_SECRET || 'cinematch_super_secret_key';
  
-// ==========================================
-// 1. เชื่อมต่อฐานข้อมูล Supabase (PostgreSQL)
-// ==========================================
+// เชื่อมต่อฐานข้อมูล Supabase (PostgreSQL)
 const { pool } = require('./database');
  
 pool.query('SELECT NOW()', (err, res) => {
@@ -34,9 +32,7 @@ const authenticateToken = (req, res, next) => {
     });
 };
  
-// ==========================================
-// 2. ระบบ Auth (สมัครสมาชิก & ล็อกอิน)
-// ==========================================
+// ระบบ Auth (สมัครสมาชิก & ล็อกอิน)
 app.post('/api/register', async (req, res) => {
     const { name, email, password } = req.body;
     if (!name || !email || !password) return res.status(400).json({ message: 'กรุณากรอกข้อมูลให้ครบถ้วน' });
@@ -137,14 +133,12 @@ app.post('/api/users/complete-quiz', authenticateToken, async (req, res) => {
     }
 });
  
-// ==========================================
-// 3. ระบบ Like / Dislike ภาพยนตร์
-// ==========================================
+// ระบบ Like / Dislike ภาพยนตร์
 app.post('/api/likes', authenticateToken, async (req, res) => {
     const { movie_id, film_id, action, type, media_type, movie_title, film_title, genres, points, poster_path } = req.body;
     const userId = req.user.id;
    
-    // ดักจับการส่งข้อมูลที่มีตัวอักษรปนมา ให้เหลือแค่ตัวเลขเพียวๆ
+    // ดักการส่งข้อมูลที่มีตัวอักษรปนมา ให้เหลือแค่ตัวเลข
     const finalMovieId = String(movie_id || film_id).replace(/^(mv-|tv-)/, '');
     const finalAction = action || type;
     const finalTitle = movie_title || film_title || null;
@@ -247,11 +241,9 @@ app.delete('/api/likes/:movie_id', authenticateToken, async (req, res) => {
     }
 });
  
-// ==========================================
-// 4. ระบบ API แนะนำภาพยนตร์ (Bradley-Terry Model)
-// ==========================================
+// ระบบ API แนะนำภาพยนตร์ (Bradley-Terry Model)
  
-// ✅ 4.1 API สำหรับบันทึกผลการโหวต This or That (อัปเดตกันคะแนนเฟ้อ)
+// API สำหรับบันทึกผลการโหวต This or That
 app.post('/api/this-that/vote', authenticateToken, async (req, res) => {
     const { winner_movie_id, loser_movie_id, winner_genre, loser_genre } = req.body;
     const userId = req.user.id;
@@ -261,7 +253,7 @@ app.post('/api/this-that/vote', authenticateToken, async (req, res) => {
     }
  
     try {
-        // 🟢 เช็คก่อนว่าผู้ใช้คนนี้ เคยโหวตหนัง "คู่นี้" ไปแล้วหรือยัง (สลับตำแหน่งผู้ชนะ/แพ้ ก็ถือว่าเป็นคู่เดียวกัน)
+        // เช็คว่าผู้ใช้คนนี้ เคยโหวตหนังคู่นี้ไปแล้วหรือยัง (สลับตำแหน่งผู้ชนะ/แพ้ ก็ถือว่าเป็นคู่เดียวกัน)
         const checkExisting = await pool.query(
             `SELECT id FROM this_that_votes
              WHERE user_id = $1
@@ -270,7 +262,7 @@ app.post('/api/this-that/vote', authenticateToken, async (req, res) => {
         );
  
         if (checkExisting.rows.length > 0) {
-            // ถ้าเคยโหวตคู่นี้แล้ว ให้อัปเดตข้อมูลเดิม (เปลี่ยนใจ) แทนที่จะบวกคะแนนซ้ำซ้อน
+            // ถ้าเคยโหวตคู่นี้แล้ว ให้อัปเดตข้อมูลเดิม
             await pool.query(
                 `UPDATE this_that_votes
                  SET winner_movie_id = $1, loser_movie_id = $2, winner_genre = $3, loser_genre = $4
@@ -293,13 +285,13 @@ app.post('/api/this-that/vote', authenticateToken, async (req, res) => {
     }
 });
  
-// ✅ 4.2 API คำนวณความชอบและแนะนำภาพยนตร์ (Top 10)
+// API คำนวณความชอบและแนะนำภาพยนตร์ (Top 10)
 app.post('/api/recommendations', authenticateToken, async (req, res) => {
     try {
         const userId = req.user.id;
         let userWeights = {};
  
-        // 1. ดึงข้อมูล user_preferences ออกมาเป็น "ฐานคะแนน" ก่อนเสมอ
+        // ดึงข้อมูล user_preferences ออกมาเป็นฐานคะแนนก่อน
         const prefResult = await pool.query(
             `SELECT pref_key, pref_value FROM user_preferences WHERE user_id = $1`,
             [userId]
@@ -312,7 +304,7 @@ app.post('/api/recommendations', authenticateToken, async (req, res) => {
             userWeights = { ...req.body.genreWeights };
         }
  
-        // 2. ดึงข้อมูล Bradley-Terry จากการโหวต This/That มาเป็น "คะแนนโบนัส"
+        // ดึงข้อมูล Bradley-Terry จากการโหวต This/That มาเป็นคะแนนโบนัส
         const votesResult = await pool.query(
             `SELECT winner_genre, loser_genre, COUNT(*) as wins
              FROM this_that_votes
@@ -364,7 +356,7 @@ app.post('/api/recommendations', authenticateToken, async (req, res) => {
                 }
             }
  
-            // 🟢 ผสานคะแนน: เอา Preference ของ Zermelo มาคูณโบนัส (เช่น 50 แต้ม) แล้วบวกทบเข้าไปในฐานคะแนนเดิม
+            // เอา Preference ของ Zermelo มาคูณโบนัส แล้วบวกทบเข้าไปในฐานคะแนนเดิม
             genres.forEach(g => {
                 const btBonus = p[g] * 15;
                 userWeights[g] = (userWeights[g] || 0) + btBonus;
@@ -424,8 +416,7 @@ app.post('/api/recommendations', authenticateToken, async (req, res) => {
                 });
             }
            
-            // 🟢 ยกเลิกการหารด้วย genreCount เพื่อไม่ให้หนัง ผจญภัย/ครอบครัว/ตลก โดนกดคะแนน
-            // เปลี่ยนมาใช้ matchScore ตรงๆ ยิ่งหนังมีแท็กตรงกับที่ชอบเยอะ ยิ่งได้ขึ้นอันดับแรกๆ
+            // ใช้ matchScore ยิ่งหนังมีแนวตรงกับที่ชอบเยอะ ยิ่งจะได้ขึ้นอันดับแรกๆ
             return { ...item, rawScore: matchScore };
         });
  
@@ -458,9 +449,7 @@ app.post('/api/recommendations', authenticateToken, async (req, res) => {
     }
 });
  
-// ==========================================
-// 5. ระบบ Duo Match (สร้างห้องและจัดการคิว)
-// ==========================================
+// ระบบ Duo Match (สร้างห้องและจัดการคิว)
 const activeRooms = {};
  
 app.post('/api/rooms/create', authenticateToken, (req, res) => {
@@ -511,7 +500,7 @@ app.post('/api/rooms/match/:pin', authenticateToken, async (req, res) => {
     }
  
     try {
-        // 🟢 เรียกใช้ PIVOT Table SQL จาก Supabase (Bayesian Average)
+        // เรียกใช้ PIVOT Table SQL จาก Supabase (Bayesian Average)
         const result = await pool.query(
             `SELECT * FROM get_duo_match_genres($1, $2)`,
             [room.host.id, room.guest.id]
@@ -584,9 +573,7 @@ app.post('/api/rooms/match/:pin', authenticateToken, async (req, res) => {
     }
 });
  
-// ==========================================
-// 6. AI Search Engine Endpoint
-// ==========================================
+// AI Search Engine Endpoint
 app.post('/api/ai-search', authenticateToken, async (req, res) => {
     const userId = req.user.id;
     const { query, conversation_id } = req.body;
@@ -746,7 +733,7 @@ app.post('/api/ai-search', authenticateToken, async (req, res) => {
                             ).trim();
 
                             return {
-                                // ID เป็นเพียงข้อมูลประกอบ Frontend จะยืนยันกับ TMDB จากชื่อและปีอีกครั้ง
+                                // ID เป็นข้อมูลประกอบ Frontend จะยืนยันกับ TMDB จากชื่อและปีอีกรอบ
                                 id: suppliedId,
                                 type: mediaType,
                                 media_type: mediaType,
@@ -785,9 +772,7 @@ app.post('/api/ai-search', authenticateToken, async (req, res) => {
     }
 });
  
-// ==========================================
 // ค้นหาภาพยนตร์และซีรีส์จากชื่อเรื่อง (TMDB Search)
-// ==========================================
 app.get('/api/search', authenticateToken, async (req, res) => {
     const { query, page = 1 } = req.query;
    
